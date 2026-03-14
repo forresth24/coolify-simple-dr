@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-/etc/coolify-dr.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+fi
+
+: "${DR_DOMAIN:?Set DR_DOMAIN in $ENV_FILE}"
+: "${GDRIVE_REMOTE:?Set GDRIVE_REMOTE in $ENV_FILE (e.g. gdrive:coolify-dr)}"
+
+LOG_DIR="${LOG_DIR:-/var/log/coolify-dr}"
+STATE_DIR="${STATE_DIR:-/var/lib/coolify-dr}"
+BACKUP_TARGETS="${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}"
+RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-rclone:${GDRIVE_REMOTE}/restic}"
+RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-/etc/coolify-dr/restic-password}"
+RESTORE_SANDBOX="${RESTORE_SANDBOX:-/var/lib/coolify-dr/restore-sandbox}"
+LOCK_FILE="${LOCK_FILE:-/var/run/coolify-dr.lock}"
+
+mkdir -p "$LOG_DIR" "$STATE_DIR"
+
+log() {
+  local msg="$*"
+  printf '[%s] %s\n' "$(date -Iseconds)" "$msg"
+}
+
+public_ipv4() {
+  local ip
+  ip="$(curl -4fsS --max-time 5 https://ifconfig.co 2>/dev/null || true)"
+  if [[ -z "$ip" ]]; then
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  fi
+  printf '%s' "$ip"
+}
+
+dns_ipv4() {
+  dig +short A "$DR_DOMAIN" | head -n1
+}
+
+check_dns_guard() {
+  local local_ip dns_ip
+  local_ip="$(public_ipv4)"
+  dns_ip="$(dns_ipv4)"
+
+  if [[ -z "$dns_ip" ]]; then
+    log "ERROR: DNS lookup failed for ${DR_DOMAIN}. Refusing to continue."
+    return 1
+  fi
+
+  if [[ "${FORCE_DNS_BYPASS:-0}" == "1" ]]; then
+    log "WARN: FORCE_DNS_BYPASS=1 enabled, skipping split-brain DNS guard."
+    return 0
+  fi
+
+  if [[ "$local_ip" != "$dns_ip" ]]; then
+    log "ERROR: Split-brain guard blocked action. DNS(${DR_DOMAIN})=$dns_ip but local=$local_ip"
+    return 1
+  fi
+
+  log "DNS guard passed: ${DR_DOMAIN} -> ${dns_ip} == local host"
+}
+
+acquire_lock() {
+  exec 9>"$LOCK_FILE"
+  if ! flock -n 9; then
+    log "INFO: Another coolify-dr process is already running."
+    return 1
+  fi
+}
+
+restic_env() {
+  export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE
+}
+
+ensure_dependencies() {
+  local deps=(curl dig flock jq restic rclone tar)
+  local missing=()
+  for d in "${deps[@]}"; do
+    if ! command -v "$d" >/dev/null 2>&1; then
+      missing+=("$d")
+    fi
+  done
+
+  if (( ${#missing[@]} > 0 )); then
+    log "ERROR: Missing dependencies: ${missing[*]}"
+    return 1
+  fi
+}
+
+snapshot_metadata() {
+  local host ip stamp
+  host="$(hostname -f 2>/dev/null || hostname)"
+  ip="$(public_ipv4)"
+  stamp="$(date -Iseconds)"
+  cat >"$STATE_DIR/last-backup-meta.json" <<META
+{
+  "timestamp": "$stamp",
+  "hostname": "$host",
+  "public_ip": "$ip",
+  "domain": "$DR_DOMAIN",
+  "repository": "$RESTIC_REPOSITORY"
+}
+META
+}
