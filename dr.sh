@@ -6,6 +6,85 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/coolify-dr}"
 ENV_FILE="${ENV_FILE:-/etc/coolify-dr.env}"
 DEFAULT_RAW_BASE="https://raw.githubusercontent.com/your-org/coolify-simple-dr/main"
 
+trim_trailing_slash() {
+  local value="$1"
+  value="${value%/}"
+  printf '%s' "$value"
+}
+
+guess_raw_base() {
+  local candidate=""
+
+  if [[ -n "${DR_SCRIPT_URL:-}" ]]; then
+    candidate="${DR_SCRIPT_URL%/dr.sh}"
+  elif [[ -n "${BOOTSTRAP_SCRIPT_URL:-}" ]]; then
+    candidate="${BOOTSTRAP_SCRIPT_URL%/dr.sh}"
+  fi
+
+  if [[ -n "$candidate" ]]; then
+    trim_trailing_slash "$candidate"
+    return
+  fi
+
+  trim_trailing_slash "${DR_REPO_RAW_BASE:-$DEFAULT_RAW_BASE}"
+}
+
+validate_non_empty() {
+  local value="$1"
+  [[ -n "${value// }" ]]
+}
+
+validate_url_base() {
+  local value
+  value="$(trim_trailing_slash "$1")"
+  [[ "$value" =~ ^https?://[^[:space:]]+$ ]]
+}
+
+validate_domain() {
+  local value="$1"
+  [[ "$value" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$value" == *.* ]]
+}
+
+validate_gdrive_remote() {
+  local value="$1"
+  local remote_name
+
+  [[ "$value" =~ ^[A-Za-z0-9_-]+:.+ ]] || return 1
+
+  remote_name="${value%%:*}:"
+  if command -v rclone >/dev/null 2>&1; then
+    rclone listremotes 2>/dev/null | grep -Fxq "$remote_name" || return 1
+  fi
+
+  return 0
+}
+
+prompt_until_valid() {
+  local var_name="$1"
+  local question="$2"
+  local default_value="$3"
+  local validator="$4"
+  local hint="$5"
+  local answer=""
+
+  while true; do
+    prompt_with_default "$var_name" "$question" "$default_value"
+    answer="${!var_name}"
+
+    if "$validator" "$answer"; then
+      if [[ "$var_name" == "DR_REPO_RAW_BASE" ]]; then
+        printf -v "$var_name" '%s' "$(trim_trailing_slash "$answer")"
+      fi
+      return
+    fi
+
+    echo "[ERROR] Invalid value for $var_name. $hint"
+    if [[ ! -t 0 ]]; then
+      exit 1
+    fi
+  done
+}
+
 prompt_with_default() {
   local var_name="$1"
   local question="$2"
@@ -33,10 +112,33 @@ bootstrap_download_and_install() {
 
   echo "[INFO] Bootstrap mode: preparing one-command DR"
 
-  prompt_with_default "DR_REPO_RAW_BASE" "Raw base URL of this repo" "${DR_REPO_RAW_BASE:-$DEFAULT_RAW_BASE}"
-  prompt_with_default "DR_DOMAIN" "DR domain (must point to this VPS before restore)" "${DR_DOMAIN:-example.com}"
-  prompt_with_default "GDRIVE_REMOTE" "Google Drive remote:path for backups" "${GDRIVE_REMOTE:-gdrive:coolify-dr}"
-  prompt_with_default "BACKUP_TARGETS" "Backup targets" "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}"
+  prompt_until_valid \
+    "DR_REPO_RAW_BASE" \
+    "Raw base URL of this repo" \
+    "$(guess_raw_base)" \
+    validate_url_base \
+    "Use full URL, e.g. https://raw.githubusercontent.com/<org>/<repo>/<branch>"
+
+  prompt_until_valid \
+    "DR_DOMAIN" \
+    "DR domain (must point to this VPS before restore)" \
+    "${DR_DOMAIN:-example.com}" \
+    validate_domain \
+    "Use a valid FQDN, e.g. dr.example.com"
+
+  prompt_until_valid \
+    "GDRIVE_REMOTE" \
+    "Google Drive remote:path for backups" \
+    "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
+    validate_gdrive_remote \
+    "Format must be <rclone-remote>:<path> and remote must exist in rclone config (if rclone is installed), e.g. gdrive:coolify-dr"
+
+  prompt_until_valid \
+    "BACKUP_TARGETS" \
+    "Backup targets" \
+    "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}" \
+    validate_non_empty \
+    "Provide at least one path, e.g. /data/coolify /var/lib/docker/volumes"
 
   required_files=(
     lib.sh
