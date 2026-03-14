@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+exec > >(tee -a "$LOG_DIR/start-safe.log") 2>&1
+
+log "Starting start-safe.sh"
+ensure_dependencies
+check_dns_guard
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl start docker || true
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  if [[ -f /data/coolify/docker-compose.yml ]]; then
+    log "Starting Coolify compose stack"
+    docker compose -f /data/coolify/docker-compose.yml up -d
+  else
+    log "WARN: /data/coolify/docker-compose.yml missing; skip stack start"
+  fi
+fi
+
+log "Triggering immediate backup after safe start"
+"$SCRIPT_DIR/backup.sh"

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=./lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+exec > >(tee -a "$LOG_DIR/restore-test.log") 2>&1
+
+log "Starting restore-test.sh"
+ensure_dependencies
+acquire_lock || exit 0
+check_dns_guard
+restic_env
+
+rm -rf "$RESTORE_SANDBOX"
+mkdir -p "$RESTORE_SANDBOX"
+
+snapshot="$(restic snapshots --latest 1 --json | jq -r '.[0].short_id // empty')"
+if [[ -z "$snapshot" ]]; then
+  log "ERROR: No snapshot available for restore test"
+  exit 1
+fi
+
+log "Restoring snapshot $snapshot into sandbox $RESTORE_SANDBOX"
+restic restore "$snapshot" --target "$RESTORE_SANDBOX"
+
+# Basic sanity check: restored tree has at least one item.
+if [[ -z "$(find "$RESTORE_SANDBOX" -mindepth 1 -maxdepth 2 | head -n1)" ]]; then
+  log "ERROR: Restore sandbox is empty"
+  exit 1
+fi
+
+log "restore-test.sh passed"
