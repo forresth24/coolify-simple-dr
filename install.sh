@@ -22,15 +22,8 @@ setup_files() {
   chmod +x "$INSTALL_DIR"/*.sh
 
   if [[ ! -f "$ENV_FILE" ]]; then
-    cat > "$ENV_FILE" <<'CONF'
-DR_DOMAIN=example.com
-GDRIVE_REMOTE=gdrive:coolify-dr
-BACKUP_TARGETS="/data/coolify /var/lib/docker/volumes"
-RESTORE_SANDBOX=/var/lib/coolify-dr/restore-sandbox
-LOG_DIR=/var/log/coolify-dr
-STATE_DIR=/var/lib/coolify-dr
-CONF
-    echo "Created $ENV_FILE. Please update values before running backup/dr."
+    echo "ERROR: Missing $ENV_FILE. Run one-command bootstrap (dr.sh) to answer required variables first."
+    exit 1
   fi
 
   if [[ ! -f /etc/coolify-dr/restic-password ]]; then
@@ -116,4 +109,4 @@ setup_files
 install_systemd
 
 echo "Install complete. Ensure rclone remote is configured and verify $ENV_FILE"
-echo "For one-shot DR from clean host: curl -fsSL <raw-repo>/dr.sh | bash"
+echo 'For one-shot DR from clean host: curl -fsSL <raw-repo>/dr.sh | DR_SCRIPT_URL="<raw-repo>/dr.sh" bash'

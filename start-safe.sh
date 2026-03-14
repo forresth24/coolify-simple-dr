@@ -23,5 +23,4 @@ if command -v docker >/dev/null 2>&1; then
   fi
 fi
 
-log "Triggering immediate backup after safe start"
-"$SCRIPT_DIR/backup.sh"
+log "Safe start finished. Run backup.sh manually if you want an immediate test backup."
