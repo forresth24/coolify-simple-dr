@@ -45,6 +45,8 @@ Và cấu hình `rclone config` để có remote `gdrive`.
 curl -fsSL https://repo/dr.sh | bash
 ```
 
+Script bootstrap sẽ hỏi các biến quan trọng (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`), lưu vào `/etc/coolify-dr.env`, tải toàn bộ script còn lại từ `DR_REPO_RAW_BASE`, cài đặt vào `/opt/coolify-dr`, rồi tự chạy restore.
+
 > Lưu ý: DNS `A` record của `DR_DOMAIN` phải trỏ về VPS hiện tại trước khi chạy (guard chống split-brain).
 
 ## Luồng DR

@@ -8,9 +8,9 @@ ENV_FILE="/etc/coolify-dr.env"
 install_deps() {
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y curl dnsutils jq restic rclone util-linux
+    apt-get install -y curl dnsutils jq restic rclone util-linux openssl
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl bind-utils jq restic rclone util-linux
+    dnf install -y curl bind-utils jq restic rclone util-linux openssl
   else
     echo "Unsupported distro. Please install dependencies manually: curl dig jq restic rclone flock"
   fi
@@ -115,5 +115,5 @@ install_deps
 setup_files
 install_systemd
 
-echo "Install complete. Configure rclone remote and edit $ENV_FILE"
+echo "Install complete. Ensure rclone remote is configured and verify $ENV_FILE"
 echo "For one-shot DR from clean host: curl -fsSL <raw-repo>/dr.sh | bash"
