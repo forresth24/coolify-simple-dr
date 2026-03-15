@@ -46,7 +46,14 @@ Và cấu hình `rclone config` để có remote `gdrive`.
 curl -fsSL https://repo/dr.sh | DR_SCRIPT_URL="https://repo/dr.sh" bash
 ```
 
-Script bootstrap sẽ tự lấy `DR_REPO_RAW_BASE` từ `DR_SCRIPT_URL` (mặc định bằng URL `dr.sh` bỏ phần `/dr.sh`), hỏi kỹ các biến quan trọng (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`) với validation, lưu vào `/etc/coolify-dr.env`, tải toàn bộ script còn lại từ `DR_REPO_RAW_BASE`, cài đặt vào `/opt/coolify-dr`, rồi tự chạy restore.
+Script bootstrap sẽ tự lấy `DR_REPO_RAW_BASE` từ `DR_SCRIPT_URL` (mặc định bằng URL `dr.sh` bỏ phần `/dr.sh`), hỏi kỹ các biến quan trọng (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`) với validation, sau đó hiển thị lại toàn bộ cấu hình để xác nhận trước khi cài đặt:
+
+- Nhấn `Y`, `y` hoặc `Enter` để tiếp tục.
+- Nhấn phím khác để hủy xác nhận: script sẽ xóa `/etc/coolify-dr.env`, bỏ toàn bộ biến cũ và hỏi lại từ đầu (luồng clean/retry an toàn).
+
+Sau khi xác nhận, bootstrap mới lưu vào `/etc/coolify-dr.env`, tải toàn bộ script còn lại từ `DR_REPO_RAW_BASE`, cài đặt vào `/opt/coolify-dr`, rồi tự chạy restore.
+
+> Lưu ý: `dr.sh` và `install.sh` cần chạy bằng `root` (hoặc `sudo`). Nếu chạy non-root, script sẽ cảnh báo sớm và dừng ngay trước khi ghi file hệ thống.
 
 > Lưu ý cho `DR_DOMAIN`:
 > - DNS `A` record của `DR_DOMAIN` phải trỏ về VPS hiện tại trước khi chạy (guard chống split-brain).

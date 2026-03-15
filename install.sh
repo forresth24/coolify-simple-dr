@@ -4,6 +4,12 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/coolify-dr"
 ENV_FILE="/etc/coolify-dr.env"
+require_root_user() {
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "[WARN] install.sh needs root privileges (sudo or root account)."
+    exit 1
+  fi
+}
 
 install_deps() {
   if command -v apt-get >/dev/null 2>&1; then
@@ -104,6 +110,7 @@ UNIT
   systemctl enable --now coolify-dr-backup.timer coolify-dr-retention.timer coolify-dr-restore-test.timer
 }
 
+require_root_user
 install_deps
 setup_files
 install_systemd
