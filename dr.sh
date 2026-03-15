@@ -57,14 +57,8 @@ validate_domain() {
 
 validate_gdrive_remote() {
   local value="$1"
-  local remote_name
 
   [[ "$value" =~ ^[A-Za-z0-9_-]+:.+ ]] || return 1
-
-  remote_name="${value%%:*}:"
-  if command -v rclone >/dev/null 2>&1; then
-    rclone listremotes 2>/dev/null | grep -Fxq "$remote_name" || return 1
-  fi
 
   return 0
 }
@@ -150,7 +144,7 @@ bootstrap_download_and_install() {
       "Google Drive remote:path for backups" \
       "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
       validate_gdrive_remote \
-      "Format must be <rclone-remote>:<path> and remote must exist in rclone config (if rclone is installed), e.g. gdrive:coolify-dr"
+      "Format must be <rclone-remote>:<path>, e.g. gdrive:coolify-dr"
 
     prompt_until_valid \
       "BACKUP_TARGETS" \
