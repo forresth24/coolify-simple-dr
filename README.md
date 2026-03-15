@@ -68,3 +68,7 @@ Sau khi xác nhận, bootstrap mới lưu vào `/etc/coolify-dr.env`, tải toà
 3. Chạy `dr.sh`.
 4. Script restore snapshot mới nhất từ Google Drive.
 5. `start-safe.sh` chỉ khởi động dịch vụ an toàn; backup ngay lập tức là tùy chọn (chạy tay nếu muốn test).
+
+## ChatGPT Codex project kit
+
+Repo có thêm bộ template tại `chatgpt-project/` để dùng workflow Bash scripting trực tiếp trong project trên chatgpt.com/codex (không phụ thuộc cơ chế cài local skills). Bộ này dùng mô hình instructions 2 tầng (standard + hardening checklist). Xem hướng dẫn trong `chatgpt-project/README.md`.
