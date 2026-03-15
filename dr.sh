@@ -6,6 +6,16 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/coolify-dr}"
 ENV_FILE="${ENV_FILE:-/etc/coolify-dr.env}"
 DEFAULT_RAW_BASE="https://raw.githubusercontent.com/your-org/coolify-simple-dr/main"
 
+require_root_user() {
+  local context="$1"
+
+  if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+    echo "[WARN] $context"
+    echo "[WARN] Please run this script with root privileges (sudo or root account)."
+    exit 1
+  fi
+}
+
 trim_trailing_slash() {
   local value="$1"
   value="${value%/}"
@@ -108,37 +118,73 @@ prompt_with_default() {
 
 bootstrap_download_and_install() {
   local tmpdir required_files file
+
+  require_root_user "Bootstrap and install steps need write access to /etc, /opt and systemd."
   tmpdir="$(mktemp -d)"
 
   echo "[INFO] Bootstrap mode: preparing one-command DR"
 
-  prompt_until_valid \
-    "DR_REPO_RAW_BASE" \
-    "Raw base URL of this repo" \
-    "$(guess_raw_base)" \
-    validate_url_base \
-    "Use full URL, e.g. https://raw.githubusercontent.com/<org>/<repo>/<branch>"
+  while true; do
+    if [[ -f "$ENV_FILE" ]]; then
+      echo "[INFO] Found existing env file: $ENV_FILE"
+      # shellcheck source=/dev/null
+      source "$ENV_FILE"
+    fi
 
-  prompt_until_valid \
-    "DR_DOMAIN" \
-    "DR domain (must point to this VPS before restore)" \
-    "${DR_DOMAIN:-example.com}" \
-    validate_domain \
-    "Use a valid FQDN, e.g. dr.example.com"
+    prompt_until_valid \
+      "DR_REPO_RAW_BASE" \
+      "Raw base URL of this repo" \
+      "$(guess_raw_base)" \
+      validate_url_base \
+      "Use full URL, e.g. https://raw.githubusercontent.com/<org>/<repo>/<branch>"
 
-  prompt_until_valid \
-    "GDRIVE_REMOTE" \
-    "Google Drive remote:path for backups" \
-    "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
-    validate_gdrive_remote \
-    "Format must be <rclone-remote>:<path> and remote must exist in rclone config (if rclone is installed), e.g. gdrive:coolify-dr"
+    prompt_until_valid \
+      "DR_DOMAIN" \
+      "DR domain (must point to this VPS before restore)" \
+      "${DR_DOMAIN:-example.com}" \
+      validate_domain \
+      "Use a valid FQDN, e.g. dr.example.com"
 
-  prompt_until_valid \
-    "BACKUP_TARGETS" \
-    "Backup targets" \
-    "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}" \
-    validate_non_empty \
-    "Provide at least one path, e.g. /data/coolify /var/lib/docker/volumes"
+    prompt_until_valid \
+      "GDRIVE_REMOTE" \
+      "Google Drive remote:path for backups" \
+      "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
+      validate_gdrive_remote \
+      "Format must be <rclone-remote>:<path> and remote must exist in rclone config (if rclone is installed), e.g. gdrive:coolify-dr"
+
+    prompt_until_valid \
+      "BACKUP_TARGETS" \
+      "Backup targets" \
+      "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}" \
+      validate_non_empty \
+      "Provide at least one path, e.g. /data/coolify /var/lib/docker/volumes"
+
+    cat <<SUMMARY
+[INFO] Bootstrap configuration review:
+  - ENV_FILE: $ENV_FILE
+  - DR_REPO_RAW_BASE: $DR_REPO_RAW_BASE
+  - DR_DOMAIN: $DR_DOMAIN
+  - GDRIVE_REMOTE: $GDRIVE_REMOTE
+  - BACKUP_TARGETS: $BACKUP_TARGETS
+SUMMARY
+
+    if [[ -t 0 ]]; then
+      local confirm
+      read -r -p "Continue bootstrap/install? [Y/n]: " confirm
+      confirm="${confirm:-Y}"
+      if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        break
+      fi
+
+      echo "[WARN] Confirmation rejected. Resetting bootstrap state and starting clean..."
+      rm -f "$ENV_FILE"
+      unset DR_REPO_RAW_BASE DR_DOMAIN GDRIVE_REMOTE BACKUP_TARGETS
+      continue
+    fi
+
+    echo "[INFO] Non-interactive mode: proceeding with reviewed config."
+    break
+  done
 
   required_files=(
     lib.sh
@@ -179,6 +225,8 @@ if [[ ! -f "$SCRIPT_DIR/lib.sh" ]]; then
   bootstrap_download_and_install
   exit 0
 fi
+
+require_root_user "DR restore mode needs root privileges for filesystem restore and service control."
 
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
