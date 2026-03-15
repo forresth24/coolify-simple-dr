@@ -72,8 +72,48 @@ acquire_lock() {
 }
 
 restic_env() {
+  ensure_gdrive_remote_configured || return 1
   export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE
 }
+
+
+rclone_config_file_path() {
+  local raw_line
+
+  raw_line="$(rclone config file 2>/dev/null | awk -F': ' '/stored at:/ {print $2; exit}')"
+  if [[ -n "$raw_line" ]]; then
+    printf '%s' "$raw_line"
+    return 0
+  fi
+
+  return 1
+}
+
+ensure_gdrive_remote_configured() {
+  local remote_name config_path
+
+  remote_name="${GDRIVE_REMOTE%%:*}"
+  config_path="$(rclone_config_file_path || true)"
+
+  if [[ -z "$config_path" ]]; then
+    log "ERROR: Unable to determine rclone config file path via 'rclone config file'."
+    log "ERROR: Configure Google Drive with 'rclone config', then verify using 'rclone listremotes'."
+    return 1
+  fi
+
+  if [[ ! -f "$config_path" ]]; then
+    log "ERROR: rclone config file not found at '$config_path'."
+    log "ERROR: Create or copy config first (for example from desktop via 'rclone config file')."
+    return 1
+  fi
+
+  if ! grep -Fqx "[$remote_name]" "$config_path"; then
+    log "ERROR: rclone remote '$remote_name' is not configured in '$config_path'."
+    log "ERROR: Run 'rclone config' (interactive), or use headless OAuth: 'rclone authorize \"drive\"' on a machine with browser, then paste token on VPS during 'rclone config'."
+    return 1
+  fi
+}
+
 
 ensure_dependencies() {
   local deps=(curl dig flock jq restic rclone tar)

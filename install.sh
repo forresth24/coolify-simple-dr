@@ -116,4 +116,7 @@ setup_files
 install_systemd
 
 echo "Install complete. Ensure rclone remote is configured and verify $ENV_FILE"
+echo "Google Drive OAuth: run 'rclone config' (interactive)."
+echo "Headless option: run 'rclone authorize \"drive\"' on a machine with browser, then paste token during 'rclone config' on this host."
+echo "Tip: run 'rclone config file' to confirm config path, then ensure that file contains your remote section."
 echo 'For one-shot DR from clean host: curl -fsSL <raw-repo>/dr.sh | DR_SCRIPT_URL="<raw-repo>/dr.sh" bash'
