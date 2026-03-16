@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-/opt/coolify-dr}"
 ENV_FILE="${ENV_FILE:-/etc/coolify-dr.env}"
 DEFAULT_RAW_BASE="https://raw.githubusercontent.com/your-org/coolify-simple-dr/main"
@@ -83,7 +82,7 @@ prompt_until_valid() {
     fi
 
     echo "[ERROR] Invalid value for $var_name. $hint"
-    if [[ ! -t 0 ]]; then
+    if [[ ! -t 0 && ! -r /dev/tty ]]; then
       exit 1
     fi
   done
@@ -103,6 +102,10 @@ prompt_with_default() {
 
   if [[ -t 0 ]]; then
     read -r -p "$question [$resolved_default]: " answer
+    answer="${answer:-$resolved_default}"
+    printf -v "$var_name" '%s' "$answer"
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "$question [$resolved_default]: " answer </dev/tty
     answer="${answer:-$resolved_default}"
     printf -v "$var_name" '%s' "$answer"
   else
@@ -162,9 +165,13 @@ bootstrap_download_and_install() {
   - BACKUP_TARGETS: $BACKUP_TARGETS
 SUMMARY
 
-    if [[ -t 0 ]]; then
+    if [[ -t 0 || -r /dev/tty ]]; then
       local confirm
-      read -r -p "Continue bootstrap/install? [Y/n]: " confirm
+      if [[ -t 0 ]]; then
+        read -r -p "Continue bootstrap/install? [Y/n]: " confirm
+      else
+        read -r -p "Continue bootstrap/install? [Y/n]: " confirm </dev/tty
+      fi
       confirm="${confirm:-Y}"
       if [[ "$confirm" =~ ^[Yy]$ ]]; then
         break
@@ -214,6 +221,13 @@ CONF
   echo "[INFO] Running DR restore workflow"
   exec "$INSTALL_DIR/dr.sh"
 }
+
+if [[ -z "${BASH_SOURCE:-}" ]]; then
+  bootstrap_download_and_install
+  exit 0
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ! -f "$SCRIPT_DIR/lib.sh" ]]; then
   bootstrap_download_and_install
