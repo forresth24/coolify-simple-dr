@@ -60,6 +60,10 @@ prompt_with_default() {
     read -r -p "$question [$resolved_default]: " answer
     answer="${answer:-$resolved_default}"
     printf -v "$var_name" '%s' "$answer"
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "$question [$resolved_default]: " answer </dev/tty
+    answer="${answer:-$resolved_default}"
+    printf -v "$var_name" '%s' "$answer"
   else
     printf -v "$var_name" '%s' "$resolved_default"
   fi
@@ -85,7 +89,7 @@ prompt_until_valid() {
     fi
 
     echo "[ERROR] Invalid value for $var_name. $hint"
-    if [[ ! -t 0 ]]; then
+    if [[ ! -t 0 && ! -r /dev/tty ]]; then
       exit 1
     fi
   done
