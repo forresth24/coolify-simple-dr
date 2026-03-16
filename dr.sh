@@ -135,7 +135,7 @@ bootstrap_download_and_install() {
     prompt_until_valid \
       "DR_DOMAIN" \
       "DR domain (must point to this VPS before restore)" \
-      "${DR_DOMAIN:-example.com}" \
+      "${DR_DOMAIN:-}" \
       validate_domain \
       "Use a valid FQDN, e.g. dr.example.com"
 
