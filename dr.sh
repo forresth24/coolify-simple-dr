@@ -62,6 +62,60 @@ validate_gdrive_remote() {
   return 0
 }
 
+choose_restore_domain_folder() {
+  local default_folder="$DR_DOMAIN"
+  local selected_folder=""
+
+  if [[ -n "${DR_RESTORE_DOMAIN_FOLDER:-}" ]]; then
+    printf '%s' "$DR_RESTORE_DOMAIN_FOLDER"
+    return 0
+  fi
+
+  if [[ ! -t 0 && ! -r /dev/tty ]]; then
+    printf '%s' "$default_folder"
+    return 0
+  fi
+
+  local folders=()
+  local folder
+  while IFS= read -r folder; do
+    folders+=("$folder")
+  done < <(list_backup_domain_folders || true)
+
+  echo "[INFO] Backup domain folders on Google Drive (${GDRIVE_REMOTE}):"
+  if (( ${#folders[@]} == 0 )); then
+    echo "  (empty - no folders found, defaulting to DR_DOMAIN)"
+    printf '%s' "$default_folder"
+    return 0
+  fi
+
+  local i=1
+  for folder in "${folders[@]}"; do
+    echo "  [$i] $folder"
+    ((i++))
+  done
+
+  local prompt_stream="/dev/tty"
+  [[ -t 0 ]] && prompt_stream="/dev/stdin"
+
+  local answer
+  read -r -p "Choose restore folder by number or name [$default_folder]: " answer <"$prompt_stream"
+  answer="${answer:-$default_folder}"
+
+  if [[ "$answer" =~ ^[0-9]+$ ]]; then
+    local idx=$((answer - 1))
+    if (( idx >= 0 && idx < ${#folders[@]} )); then
+      selected_folder="${folders[$idx]}"
+    fi
+  fi
+
+  if [[ -z "$selected_folder" ]]; then
+    selected_folder="$answer"
+  fi
+
+  printf '%s' "$selected_folder"
+}
+
 prompt_until_valid() {
   local var_name="$1"
   local question="$2"
@@ -244,7 +298,10 @@ log "Starting dr.sh"
 ensure_dependencies
 acquire_lock || exit 0
 check_dns_guard
-restic_env
+
+restore_domain_folder="$(choose_restore_domain_folder)"
+log "Selected restore domain folder: $restore_domain_folder"
+restic_env "$restore_domain_folder"
 
 mkdir -p /data
 log "Stopping old coolify services (if any)"

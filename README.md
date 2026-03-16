@@ -100,6 +100,29 @@ rclone listremotes
 
 Nếu bạn đã cấu hình ở máy desktop, có thể copy file config đó sang VPS (đúng path mà `rclone config file` trên VPS đang trỏ tới), rồi chạy lại `rclone listremotes` để xác nhận có remote cần dùng.
 
+
+## Phân tách backup theo domain
+
+Từ phiên bản này, repository restic trên Google Drive tự động tách theo domain:
+
+- Backup dùng đường dẫn: `rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic`
+- Ví dụ với `GDRIVE_REMOTE=gdrive:coolify-dr` và `DR_DOMAIN=dr-new.example.com` thì backup nằm tại:
+  - `gdrive:coolify-dr/dr-new.example.com/restic`
+
+Khi chạy `dr.sh`, script sẽ:
+
+1. Liệt kê các thư mục cấp 1 dưới `GDRIVE_REMOTE` (coi như danh sách domain).
+2. Hỏi bạn chọn thư mục để restore (chọn theo số hoặc nhập tên folder).
+3. Restore snapshot mới nhất từ thư mục đã chọn.
+
+Bạn cũng có thể chạy non-interactive bằng cách set trước:
+
+```bash
+DR_RESTORE_DOMAIN_FOLDER=dr-new.example.com sudo /opt/coolify-dr/dr.sh
+```
+
+Nếu không set biến này và không có TTY, script mặc định restore theo `DR_DOMAIN`.
+
 ## Luồng DR
 
 1. Spin up VPS mới.
