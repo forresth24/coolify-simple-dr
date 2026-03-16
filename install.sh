@@ -4,6 +4,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="/opt/coolify-dr"
 ENV_FILE="/etc/coolify-dr.env"
+DEFAULT_RAW_BASE="https://raw.githubusercontent.com/your-org/coolify-simple-dr/main"
+
 require_root_user() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     echo "[WARN] install.sh needs root privileges (sudo or root account)."
@@ -11,14 +13,167 @@ require_root_user() {
   fi
 }
 
-install_deps() {
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y curl dnsutils jq restic rclone util-linux openssl
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y curl bind-utils jq restic rclone util-linux openssl
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+trim_trailing_slash() {
+  local value="$1"
+  value="${value%/}"
+  printf '%s' "$value"
+}
+
+validate_non_empty() {
+  local value="$1"
+  [[ -n "${value// }" ]]
+}
+
+validate_url_base() {
+  local value
+  value="$(trim_trailing_slash "$1")"
+  [[ "$value" =~ ^https?://[^[:space:]]+$ ]]
+}
+
+validate_domain() {
+  local value="$1"
+  [[ "$value" =~ ^[A-Za-z0-9.-]+$ ]] && [[ "$value" == *.* ]]
+}
+
+validate_gdrive_remote() {
+  local value="$1"
+  [[ "$value" =~ ^[A-Za-z0-9_-]+:.+ ]]
+}
+
+prompt_with_default() {
+  local var_name="$1"
+  local question="$2"
+  local default_value="$3"
+  local current_value="${!var_name:-}"
+  local resolved_default="$default_value"
+  local answer
+
+  if [[ -n "$current_value" ]]; then
+    resolved_default="$current_value"
+  fi
+
+  if [[ -t 0 ]]; then
+    read -r -p "$question [$resolved_default]: " answer
+    answer="${answer:-$resolved_default}"
+    printf -v "$var_name" '%s' "$answer"
   else
-    echo "Unsupported distro. Please install dependencies manually: curl dig jq restic rclone flock"
+    printf -v "$var_name" '%s' "$resolved_default"
+  fi
+}
+
+prompt_until_valid() {
+  local var_name="$1"
+  local question="$2"
+  local default_value="$3"
+  local validator="$4"
+  local hint="$5"
+  local answer=""
+
+  while true; do
+    prompt_with_default "$var_name" "$question" "$default_value"
+    answer="${!var_name}"
+
+    if "$validator" "$answer"; then
+      if [[ "$var_name" == "DR_REPO_RAW_BASE" ]]; then
+        printf -v "$var_name" '%s' "$(trim_trailing_slash "$answer")"
+      fi
+      return
+    fi
+
+    echo "[ERROR] Invalid value for $var_name. $hint"
+    if [[ ! -t 0 ]]; then
+      exit 1
+    fi
+  done
+}
+
+create_env_if_missing() {
+  if [[ -f "$ENV_FILE" ]]; then
+    return
+  fi
+
+  echo "[INFO] Missing $ENV_FILE. Please answer initial configuration questions."
+
+  prompt_until_valid \
+    "DR_REPO_RAW_BASE" \
+    "Raw base URL of this repo" \
+    "${DR_REPO_RAW_BASE:-$DEFAULT_RAW_BASE}" \
+    validate_url_base \
+    "Use full URL, e.g. https://raw.githubusercontent.com/<org>/<repo>/<branch>"
+
+  prompt_until_valid \
+    "DR_DOMAIN" \
+    "DR domain (must point to this VPS before restore)" \
+    "${DR_DOMAIN:-}" \
+    validate_domain \
+    "Use a valid FQDN, e.g. dr.example.com"
+
+  prompt_until_valid \
+    "GDRIVE_REMOTE" \
+    "Google Drive remote:path for backups" \
+    "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
+    validate_gdrive_remote \
+    "Format must be <rclone-remote>:<path>, e.g. gdrive:coolify-dr"
+
+  prompt_until_valid \
+    "BACKUP_TARGETS" \
+    "Backup targets" \
+    "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}" \
+    validate_non_empty \
+    "Provide at least one path, e.g. /data/coolify /var/lib/docker/volumes"
+
+  cat >"$ENV_FILE" <<CONF
+DR_REPO_RAW_BASE=$DR_REPO_RAW_BASE
+DR_DOMAIN=$DR_DOMAIN
+GDRIVE_REMOTE=$GDRIVE_REMOTE
+BACKUP_TARGETS="$BACKUP_TARGETS"
+RESTORE_SANDBOX=/var/lib/coolify-dr/restore-sandbox
+LOG_DIR=/var/log/coolify-dr
+STATE_DIR=/var/lib/coolify-dr
+CONF
+
+  echo "[INFO] Saved config to $ENV_FILE"
+}
+
+install_deps() {
+  local missing_pkgs=()
+
+  have_cmd curl || missing_pkgs+=(curl)
+  have_cmd dig || missing_pkgs+=(dnsutils)
+  have_cmd jq || missing_pkgs+=(jq)
+  have_cmd restic || missing_pkgs+=(restic)
+  have_cmd rclone || missing_pkgs+=(rclone)
+  have_cmd flock || missing_pkgs+=(util-linux)
+  have_cmd openssl || missing_pkgs+=(openssl)
+
+  if (( ${#missing_pkgs[@]} == 0 )); then
+    echo "[INFO] Dependencies already satisfied. Skipping package installation."
+    return 0
+  fi
+
+  echo "[INFO] Missing dependencies detected: ${missing_pkgs[*]}"
+
+  if have_cmd apt-get; then
+    apt-get update
+    apt-get install -y "${missing_pkgs[@]}"
+  elif have_cmd dnf; then
+    local dnf_pkgs=()
+    local pkg
+    for pkg in "${missing_pkgs[@]}"; do
+      if [[ "$pkg" == "dnsutils" ]]; then
+        dnf_pkgs+=(bind-utils)
+      else
+        dnf_pkgs+=("$pkg")
+      fi
+    done
+    dnf install -y "${dnf_pkgs[@]}"
+  else
+    echo "Unsupported distro. Please install dependencies manually: curl dig jq restic rclone flock openssl"
+    exit 1
   fi
 }
 
@@ -27,10 +182,7 @@ setup_files() {
   cp "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.sh "$INSTALL_DIR"/
   chmod +x "$INSTALL_DIR"/*.sh
 
-  if [[ ! -f "$ENV_FILE" ]]; then
-    echo "ERROR: Missing $ENV_FILE. Run one-command bootstrap (dr.sh) to answer required variables first."
-    exit 1
-  fi
+  create_env_if_missing
 
   if [[ ! -f /etc/coolify-dr/restic-password ]]; then
     openssl rand -hex 32 >/etc/coolify-dr/restic-password
