@@ -12,10 +12,13 @@ fi
 : "${DR_DOMAIN:?Set DR_DOMAIN in $ENV_FILE}"
 : "${GDRIVE_REMOTE:?Set GDRIVE_REMOTE in $ENV_FILE (e.g. gdrive:coolify-dr)}"
 
+GDRIVE_REMOTE_NAME="${GDRIVE_REMOTE%%:*}"
+
 LOG_DIR="${LOG_DIR:-/var/log/coolify-dr}"
 STATE_DIR="${STATE_DIR:-/var/lib/coolify-dr}"
 BACKUP_TARGETS="${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}"
-RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-rclone:${GDRIVE_REMOTE}/restic}"
+DEFAULT_RESTIC_DOMAIN_FOLDER="${RESTIC_DOMAIN_FOLDER:-$DR_DOMAIN}"
+RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-rclone:${GDRIVE_REMOTE}/${DEFAULT_RESTIC_DOMAIN_FOLDER}/restic}"
 RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-/etc/coolify-dr/restic-password}"
 RESTORE_SANDBOX="${RESTORE_SANDBOX:-/var/lib/coolify-dr/restore-sandbox}"
 LOCK_FILE="${LOCK_FILE:-/var/run/coolify-dr.lock}"
@@ -71,9 +74,22 @@ acquire_lock() {
   fi
 }
 
+restic_repository_for_domain_folder() {
+  local domain_folder="$1"
+  printf 'rclone:%s/%s/restic' "$GDRIVE_REMOTE" "$domain_folder"
+}
+
 restic_env() {
+  local domain_folder="${1:-${RESTIC_DOMAIN_FOLDER:-$DR_DOMAIN}}"
+
   ensure_gdrive_remote_configured || return 1
+  RESTIC_REPOSITORY="$(restic_repository_for_domain_folder "$domain_folder")"
+  export RESTIC_DOMAIN_FOLDER="$domain_folder"
   export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE
+}
+
+list_backup_domain_folders() {
+  rclone lsf "$GDRIVE_REMOTE" --dirs-only | sed 's:/$::' | awk 'NF > 0'
 }
 
 
@@ -92,7 +108,7 @@ rclone_config_file_path() {
 ensure_gdrive_remote_configured() {
   local remote_name config_path
 
-  remote_name="${GDRIVE_REMOTE%%:*}"
+  remote_name="$GDRIVE_REMOTE_NAME"
   config_path="$(rclone_config_file_path || true)"
 
   if [[ -z "$config_path" ]]; then
