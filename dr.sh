@@ -281,7 +281,8 @@ if [[ -z "${BASH_SOURCE:-}" ]]; then
   exit 0
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE:-$0}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")" && pwd -P)"
 
 if [[ ! -f "$SCRIPT_DIR/lib.sh" ]]; then
   bootstrap_download_and_install

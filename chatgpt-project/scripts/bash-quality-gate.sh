@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+SCRIPT_SOURCE="${BASH_SOURCE:-$0}"
+ROOT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")/../.." && pwd -P)"
 
 status=0
 
