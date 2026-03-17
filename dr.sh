@@ -4,6 +4,7 @@ set -Eeuo pipefail
 INSTALL_DIR="${INSTALL_DIR:-/opt/coolify-dr}"
 ENV_FILE="${ENV_FILE:-/etc/coolify-dr.env}"
 DEFAULT_RAW_BASE="https://raw.githubusercontent.com/your-org/coolify-simple-dr/main"
+DR_BOOTSTRAP_MODE="${DR_BOOTSTRAP_MODE:-restore}"
 
 require_root_user() {
   local context="$1"
@@ -271,6 +272,11 @@ CONF
 
   echo "[INFO] Saved config to $ENV_FILE"
   bash "$tmpdir/install.sh"
+
+  if [[ "$DR_BOOTSTRAP_MODE" == "install-only" ]]; then
+    echo "[INFO] DR_BOOTSTRAP_MODE=install-only set. Skipping restore workflow."
+    exit 0
+  fi
 
   echo "[INFO] Running DR restore workflow"
   exec "$INSTALL_DIR/dr.sh"
