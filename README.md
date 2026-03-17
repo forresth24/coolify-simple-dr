@@ -146,6 +146,28 @@ DR_RESTORE_DOMAIN_FOLDER=dr-new.example.com sudo /opt/coolify-dr/dr.sh
 
 If `DR_RESTORE_DOMAIN_FOLDER` is not set and no TTY is available, it defaults to `DR_DOMAIN`.
 
+## One-command for the primary instance (bootstrap + cron + first upload)
+
+Use this script on the **primary Coolify instance** before running `dr.sh` on the second DR instance:
+
+```bash
+curl -fsSL https://repo/bootstrap-primary.sh | DR_SCRIPT_URL="https://repo/dr.sh" bash
+```
+
+The script will:
+
+1. Reuse the existing `dr.sh` bootstrap flow with `DR_BOOTSTRAP_MODE=install-only` (install only, no restore).
+2. Install `crontab` (`cron`/`cronie`) if the command is missing.
+3. Validate runtime prerequisites (including rclone remote configuration) before scheduling backups.
+4. Add an idempotent backup cron job (`*/5 * * * * /opt/coolify-dr/backup.sh`) if not already present.
+5. Run `backup.sh` immediately for the first upload.
+
+You can override the cron schedule with `CRON_SCHEDULE`, for example:
+
+```bash
+CRON_SCHEDULE="*/10 * * * *" bash bootstrap-primary.sh
+```
+
 ## DR workflow
 
 1. Provision a new VPS.
