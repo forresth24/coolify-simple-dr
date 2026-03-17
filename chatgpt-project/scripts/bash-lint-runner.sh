@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE:-$0}"
+ROOT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")/../.." && pwd -P)"
 
 mapfile -t shell_files < <(find "$ROOT_DIR" -maxdepth 2 -type f -name "*.sh" | sort)
 
