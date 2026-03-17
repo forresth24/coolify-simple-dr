@@ -183,7 +183,7 @@ install_deps() {
 
 setup_files() {
   mkdir -p "$INSTALL_DIR" /etc/coolify-dr /var/log/coolify-dr /var/lib/coolify-dr
-  cp "$SCRIPT_DIR"/*.sh "$SCRIPT_DIR"/lib.sh "$INSTALL_DIR"/
+  cp "$SCRIPT_DIR"/*.sh "$INSTALL_DIR"/
   chmod +x "$INSTALL_DIR"/*.sh
 
   create_env_if_missing
