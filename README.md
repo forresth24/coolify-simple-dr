@@ -1,16 +1,18 @@
 # coolify-simple-dr
 
-Bộ script DR tối giản cho Coolify với **1 nguồn backup duy nhất: Google Drive** (qua `rclone` + `restic`).
+A minimal disaster recovery (DR) script set for Coolify, using **restic + rclone** with a remote backup backend.
 
-## Tính năng
+> Note: the env variable name is still `GDRIVE_REMOTE` for backward compatibility, but the remote can be any rclone backend (Google Drive, S3, B2, etc.) as long as it is configured in `rclone`.
 
-- Backup incremental mỗi 1 phút (`systemd timer`).
-- Chống split-brain: mọi script quan trọng đều check DNS guard trước khi chạy.
-- Verify integrity trước khi backup/upload (`verify-backup.sh`).
-- Log đầy đủ theo thời gian + metadata host/IP (`/var/log/coolify-dr`).
-- Tự kiểm tra restore sandbox định kỳ (`restore-test.sh`).
+## Features
 
-## File chính
+- Incremental backups every minute (`systemd` timer).
+- Split-brain protection via DNS guard checks before critical scripts run.
+- Integrity verification before backup/upload (`verify-backup.sh`).
+- Timestamped logs with host/IP metadata (`/var/log/coolify-dr`).
+- Periodic sandbox restore testing (`restore-test.sh`).
+
+## Main scripts
 
 - `backup.sh`
 - `retention.sh`
@@ -20,7 +22,7 @@ Bộ script DR tối giản cho Coolify với **1 nguồn backup duy nhất: Goo
 - `install.sh`
 - `start-safe.sh`
 
-## Cài đặt nhanh
+## Quick install
 
 ```bash
 git clone <repo>
@@ -28,109 +30,138 @@ cd coolify-simple-dr
 sudo bash install.sh
 ```
 
-`install.sh` cần sẵn `/etc/coolify-dr.env` (không tự tạo file tạm). Nếu cài mới, nên chạy one-command ở dưới để script hỏi đủ biến.
+`install.sh` expects `/etc/coolify-dr.env` to exist (it does not create temporary config files). If this is a fresh setup, prefer the one-command flow below so the script can prompt for all required values.
 
-Nếu đã có env file thì sửa `/etc/coolify-dr.env`:
+If you already have the env file, update `/etc/coolify-dr.env`:
 
 ```bash
 DR_DOMAIN=your-domain.com
-GDRIVE_REMOTE=gdrive:coolify-dr
+GDRIVE_REMOTE=myremote:coolify-dr
 BACKUP_TARGETS="/data/coolify /var/lib/docker/volumes"
 ```
 
-Và cấu hình `rclone config` để có remote `gdrive`.
-
-## DR one-command
+## One-command DR bootstrap
 
 ```bash
 curl -fsSL https://repo/dr.sh | DR_SCRIPT_URL="https://repo/dr.sh" bash
 ```
 
-Script bootstrap sẽ tự lấy `DR_REPO_RAW_BASE` từ `DR_SCRIPT_URL` (mặc định bằng URL `dr.sh` bỏ phần `/dr.sh`), hỏi kỹ các biến quan trọng (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`) với validation, sau đó hiển thị lại toàn bộ cấu hình để xác nhận trước khi cài đặt:
+The bootstrap script will:
 
-- Nhấn `Y`, `y` hoặc `Enter` để tiếp tục.
-- Nhấn phím khác để hủy xác nhận: script sẽ xóa `/etc/coolify-dr.env`, bỏ toàn bộ biến cũ và hỏi lại từ đầu (luồng clean/retry an toàn).
+1. Auto-derive `DR_REPO_RAW_BASE` from `DR_SCRIPT_URL`.
+2. Prompt and validate key values (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`).
+3. Show a full configuration summary for confirmation.
 
-Sau khi xác nhận, bootstrap mới lưu vào `/etc/coolify-dr.env`, tải toàn bộ script còn lại từ `DR_REPO_RAW_BASE`, cài đặt vào `/opt/coolify-dr`, rồi tự chạy restore.
+Confirmation behavior:
 
-> Lưu ý: `dr.sh` và `install.sh` cần chạy bằng `root` (hoặc `sudo`). Nếu chạy non-root, script sẽ cảnh báo sớm và dừng ngay trước khi ghi file hệ thống.
+- Press `Y`, `y`, or `Enter` to continue.
+- Press any other key to cancel confirmation: the script removes `/etc/coolify-dr.env`, clears old values, and restarts the prompt flow.
 
-> Lưu ý cho `DR_DOMAIN`:
-> - DNS `A` record của `DR_DOMAIN` phải trỏ về VPS hiện tại trước khi chạy (guard chống split-brain).
-> - Nếu dùng Cloudflare, **không bật proxy (orange cloud)** cho record này trong lúc DR; để `DNS only` để IP public khớp check guard.
+After confirmation, it saves `/etc/coolify-dr.env`, downloads remaining scripts from `DR_REPO_RAW_BASE`, installs to `/opt/coolify-dr`, and runs restore.
 
-> Lưu ý cho `GDRIVE_REMOTE`: phải đúng format `remote:path` (ví dụ `gdrive:coolify-dr`). One-command chỉ validate format để không chặn luồng cài đặt; khi chạy DR/backup/retention, script sẽ kiểm tra remote có tồn tại trong `rclone config` và báo lỗi rõ ràng nếu thiếu.
+> `dr.sh` and `install.sh` must run as `root` (or `sudo`).
 
+> `DR_DOMAIN` note:
+> - The DNS `A` record of `DR_DOMAIN` must point to the current VPS before running (split-brain guard).
+> - If you use Cloudflare, disable proxy (`DNS only`) during DR checks so public IP comparison works.
 
-## Cấu hình rclone Google Drive (OAuth token)
+> `GDRIVE_REMOTE` note: must be in `remote:path` format (example: `myremote:coolify-dr`). Install/bootstrap validates format only; runtime scripts validate the remote really exists in `rclone config`.
 
-Trên VPS chạy DR, bạn cần có remote đúng tên trong `GDRIVE_REMOTE` (ví dụ `gdrive:`) để script truy cập Google Drive.
+## rclone configuration (correct-result guide)
 
-### Cách 1: cấu hình trực tiếp trên VPS (có browser)
+On the DR VPS, configure a remote with the same name used in `GDRIVE_REMOTE` (example remote name: `myremote`).
+
+### Interactive setup
 
 ```bash
 rclone config
 ```
 
-Chọn:
-- `n` (New remote)
-- tên remote (ví dụ `gdrive`)
-- storage type: `drive`
-- làm theo OAuth flow để lấy token
+Create a new remote and follow your backend-specific auth flow.
 
-### Cách 2: VPS headless (không có browser)
-
-1. Trên máy local có browser, chạy:
-
-```bash
-rclone authorize "drive"
-```
-
-2. Copy JSON token in ra từ lệnh trên.
-3. Trên VPS, chạy `rclone config`, tạo remote `drive`, khi được hỏi token thì paste JSON token vừa lấy.
-
-Sau khi xong, kiểm tra:
+### Check which config file is used
 
 ```bash
 rclone config file
-rclone listremotes
 ```
 
-`rclone config file` cho biết chính xác file config đang được dùng (ví dụ `/root/.config/rclone/rclone.conf` hoặc `~/.rclone.conf`). Script DR dùng file này làm căn cứ validate remote (`[gdrive]` phải tồn tại trong file).
+Example expected output:
 
-Nếu bạn đã cấu hình ở máy desktop, có thể copy file config đó sang VPS (đúng path mà `rclone config file` trên VPS đang trỏ tới), rồi chạy lại `rclone listremotes` để xác nhận có remote cần dùng.
+```text
+Configuration file is stored at:
+/root/.config/rclone/rclone.conf
+```
 
+### Example of a valid config snippet
 
-## Phân tách backup theo domain
+If `GDRIVE_REMOTE=myremote:coolify-dr`, your config file should contain a matching section header:
 
-Từ phiên bản này, repository restic trên Google Drive tự động tách theo domain:
+```ini
+[myremote]
+type = drive
+scope = drive
+token = {"access_token":"...","token_type":"Bearer","refresh_token":"...","expiry":"2026-01-01T00:00:00Z"}
+```
 
-- Backup dùng đường dẫn: `rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic`
-- Ví dụ với `GDRIVE_REMOTE=gdrive:coolify-dr` và `DR_DOMAIN=dr-new.example.com` thì backup nằm tại:
-  - `gdrive:coolify-dr/dr-new.example.com/restic`
+> The exact keys vary by backend (`drive`, `s3`, `b2`, ...), but `[myremote]` must exist.
 
-Khi chạy `dr.sh`, script sẽ:
+### Verify remote and list data
 
-1. Liệt kê các thư mục cấp 1 dưới `GDRIVE_REMOTE` (coi như danh sách domain).
-2. Hỏi bạn chọn thư mục để restore (chọn theo số hoặc nhập tên folder).
-3. Restore snapshot mới nhất từ thư mục đã chọn.
+```bash
+rclone listremotes
+rclone lsd myremote:coolify-dr
+```
 
-Bạn cũng có thể chạy non-interactive bằng cách set trước:
+- `rclone listremotes` should include `myremote:`.
+- `rclone lsd myremote:coolify-dr` should list directories (or return empty if the path is new).
+
+If you configured rclone on another machine, copy the config file to the VPS path returned by `rclone config file`, then re-run the checks above.
+
+## Domain-separated backups
+
+Restic repository path is automatically namespaced by domain:
+
+- `rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic`
+
+Example with:
+
+- `GDRIVE_REMOTE=myremote:coolify-dr`
+- `DR_DOMAIN=dr-new.example.com`
+
+Resulting backup location:
+
+- `myremote:coolify-dr/dr-new.example.com/restic`
+
+When running `dr.sh`, it:
+
+1. Lists first-level folders under `GDRIVE_REMOTE` (treated as domain candidates).
+2. Prompts you to choose a restore folder (number or folder name).
+3. Restores the latest snapshot from that folder.
+
+Non-interactive restore example:
 
 ```bash
 DR_RESTORE_DOMAIN_FOLDER=dr-new.example.com sudo /opt/coolify-dr/dr.sh
 ```
 
-Nếu không set biến này và không có TTY, script mặc định restore theo `DR_DOMAIN`.
+If `DR_RESTORE_DOMAIN_FOLDER` is not set and no TTY is available, it defaults to `DR_DOMAIN`.
 
-## Luồng DR
+## DR workflow
 
-1. Spin up VPS mới.
-2. Trỏ DNS về VPS mới.
-3. Chạy `dr.sh`.
-4. Script restore snapshot mới nhất từ Google Drive.
-5. `start-safe.sh` chỉ khởi động dịch vụ an toàn; backup ngay lập tức là tùy chọn (chạy tay nếu muốn test).
+1. Provision a new VPS.
+2. Point DNS to the new VPS.
+3. Run `dr.sh`.
+4. Restore the latest snapshot from the configured remote.
+5. Start services safely with `start-safe.sh`; immediate backup afterward is optional.
+
+## Documentation links
+
+- rclone docs: <https://rclone.org/docs/>
+- rclone config docs: <https://rclone.org/commands/rclone_config/>
+- restic docs: <https://restic.readthedocs.io/en/stable/>
+- systemd timer docs: <https://www.freedesktop.org/software/systemd/man/systemd.timer.html>
+- jq docs: <https://jqlang.github.io/jq/>
 
 ## ChatGPT Codex project kit
 
-Repo có thêm bộ template tại `chatgpt-project/` để dùng workflow Bash scripting trực tiếp trong project trên chatgpt.com/codex (không phụ thuộc cơ chế cài local skills). Bộ này dùng mô hình instructions 2 tầng (standard + hardening checklist). Xem hướng dẫn trong `chatgpt-project/README.md`.
+This repo also includes `chatgpt-project/` templates for Bash scripting workflows in chatgpt.com/codex (standard mode + optional hardening checklist mode). See `chatgpt-project/README.md`.
