@@ -18,7 +18,8 @@ A minimal disaster recovery (DR) script set for Coolify, using **restic + rclone
 - `retention.sh`
 - `verify-backup.sh`
 - `restore-test.sh`
-- `dr.sh`
+- `coolify-dr.sh` (main entrypoint)
+- `dr.sh` (compatibility wrapper)
 - `install.sh`
 - `start-safe.sh`
 
@@ -43,7 +44,7 @@ BACKUP_TARGETS="/data/coolify /var/lib/docker/volumes"
 ## One-command DR bootstrap
 
 ```bash
-curl -fsSL https://repo/dr.sh | DR_SCRIPT_URL="https://repo/dr.sh" bash
+curl -fsSL https://repo/coolify-dr.sh | DR_SCRIPT_URL="https://repo/coolify-dr.sh" bash
 ```
 
 The bootstrap script will:
@@ -59,7 +60,7 @@ Confirmation behavior:
 
 After confirmation, it saves `/etc/coolify-dr.env`, downloads remaining scripts from `DR_REPO_RAW_BASE`, installs to `/opt/coolify-dr`, and runs restore.
 
-> `dr.sh` and `install.sh` must run as `root` (or `sudo`).
+> `coolify-dr.sh` and `install.sh` must run as `root` (or `sudo`).
 
 > `DR_DOMAIN` note:
 > - The DNS `A` record of `DR_DOMAIN` must point to the current VPS before running (split-brain guard).
@@ -132,7 +133,7 @@ Resulting backup location:
 
 - `myremote:coolify-dr/dr-new.example.com/restic`
 
-When running `dr.sh`, it:
+When running `coolify-dr.sh`, it:
 
 1. Lists first-level folders under `GDRIVE_REMOTE` (treated as domain candidates).
 2. Prompts you to choose a restore folder (number or folder name).
@@ -141,22 +142,22 @@ When running `dr.sh`, it:
 Non-interactive restore example:
 
 ```bash
-DR_RESTORE_DOMAIN_FOLDER=dr-new.example.com sudo /opt/coolify-dr/dr.sh
+DR_RESTORE_DOMAIN_FOLDER=dr-new.example.com sudo /opt/coolify-dr/coolify-dr.sh
 ```
 
 If `DR_RESTORE_DOMAIN_FOLDER` is not set and no TTY is available, it defaults to `DR_DOMAIN`.
 
-## One-command for the primary instance (bootstrap + cron + first upload)
+## One-command for the primary instance (install + cron + first upload)
 
-Use this script on the **primary Coolify instance** before running `dr.sh` on the second DR instance:
+Use the shared `coolify-dr.sh` entrypoint on the **primary Coolify instance** before running restore mode on the second DR instance:
 
 ```bash
-curl -fsSL https://repo/bootstrap-primary.sh | DR_SCRIPT_URL="https://repo/dr.sh" bash
+curl -fsSL https://repo/coolify-dr.sh | DR_SCRIPT_URL="https://repo/coolify-dr.sh" DR_BOOTSTRAP_MODE=primary bash
 ```
 
-The script will:
+Primary mode will:
 
-1. Reuse the existing `dr.sh` bootstrap flow with `DR_BOOTSTRAP_MODE=install-only` (install only, no restore).
+1. Run bootstrap/install flow first.
 2. Install `crontab` (`cron`/`cronie`) if the command is missing.
 3. Validate runtime prerequisites (including rclone remote configuration) before scheduling backups.
 4. Add an idempotent backup cron job (`*/5 * * * * /opt/coolify-dr/backup.sh`) if not already present.
@@ -165,14 +166,14 @@ The script will:
 You can override the cron schedule with `CRON_SCHEDULE`, for example:
 
 ```bash
-CRON_SCHEDULE="*/10 * * * *" bash bootstrap-primary.sh
+CRON_SCHEDULE="*/10 * * * *" DR_BOOTSTRAP_MODE=primary bash coolify-dr.sh
 ```
 
 ## DR workflow
 
 1. Provision a new VPS.
 2. Point DNS to the new VPS.
-3. Run `dr.sh`.
+3. Run `coolify-dr.sh`.
 4. Restore the latest snapshot from the configured remote.
 5. Start services safely with `start-safe.sh`; immediate backup afterward is optional.
 
