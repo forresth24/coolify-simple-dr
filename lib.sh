@@ -11,7 +11,7 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 : "${DR_DOMAIN:?Set DR_DOMAIN in $ENV_FILE}"
-: "${GDRIVE_REMOTE:?Set GDRIVE_REMOTE in $ENV_FILE (e.g. gdrive:coolify-dr)}"
+: "${GDRIVE_REMOTE:?Set GDRIVE_REMOTE in $ENV_FILE (e.g. gdrive:coolify-dr or gdrive:)}"
 
 GDRIVE_REMOTE_NAME="${GDRIVE_REMOTE%%:*}"
 GDRIVE_REMOTE_PATH="${GDRIVE_REMOTE#*:}"
@@ -117,7 +117,6 @@ rclone_remote_has_root_folder_id() {
 
 effective_gdrive_remote() {
   if [[ -n "$GDRIVE_REMOTE_PATH" && "$GDRIVE_REMOTE_PATH" != */* ]] && rclone_remote_has_root_folder_id; then
-    log "INFO: Remote '$GDRIVE_REMOTE_NAME' already has root_folder_id configured; using remote root instead of nested path '$GDRIVE_REMOTE_PATH'." >&2
     printf '%s:' "$GDRIVE_REMOTE_NAME"
     return 0
   fi
@@ -227,7 +226,7 @@ log_post_backup_status() {
   log "STATUS tail -n 100 '$LOG_DIR/backup.log'"
   log "STATUS tail -n 100 '$LOG_DIR/verify-backup.log'"
   log "STATUS cat '$STATE_DIR/last-backup-meta.json'"
-  log "STATUS restic --repo '$RESTIC_REPOSITORY' snapshots --last 5"
+  log "STATUS restic --repo '$RESTIC_REPOSITORY' snapshots --latest 5"
   log "STATUS restic --repo '$RESTIC_REPOSITORY' stats latest"
   log "STATUS rclone lsd '$(effective_gdrive_remote)'"
 }
@@ -236,7 +235,7 @@ log_restore_status() {
   log "Status commands to inspect restore state:"
   log "STATUS tail -n 100 '$LOG_DIR/dr.log'"
   log "STATUS tail -n 100 '$LOG_DIR/start-safe.log'"
-  log "STATUS restic --repo '$RESTIC_REPOSITORY' snapshots --last 5"
+  log "STATUS restic --repo '$RESTIC_REPOSITORY' snapshots --latest 5"
   log "STATUS docker ps -a"
   log "STATUS systemctl status docker --no-pager"
 }

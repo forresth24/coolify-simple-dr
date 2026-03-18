@@ -42,7 +42,7 @@ restic_check_mode="${RESTIC_CHECK_MODE:-quick}"
 case "$restic_check_mode" in
   quick)
     log "Running quick repository access check"
-    restic snapshots --last 1 >/dev/null
+    restic snapshots --latest 1 >/dev/null
     ;;
   full)
     log "Running full metadata consistency check"
