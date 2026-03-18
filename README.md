@@ -136,6 +136,8 @@ Resulting backup location:
 
 - `myremote:coolify-dr/dr-new.example.com/restic`
 
+`verify-backup.sh` defaults to a quick repository access check (`RESTIC_CHECK_MODE=quick`) before each backup so scheduled runs do not get stuck in a long `restic check`. Set `RESTIC_CHECK_MODE=full` only when you intentionally want a full metadata scan.
+
 When running `coolify-dr.sh`, it:
 
 1. Lists first-level folders under `GDRIVE_REMOTE` (treated as domain candidates).

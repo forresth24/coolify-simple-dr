@@ -37,6 +37,20 @@ elif [[ $probe_status -ne 0 ]]; then
   exit $probe_status
 fi
 
-log "Running metadata consistency check"
-restic check --with-cache >/dev/null
+restic_check_mode="${RESTIC_CHECK_MODE:-quick}"
+case "$restic_check_mode" in
+  quick)
+    log "Running quick repository access check"
+    restic snapshots --last 1 >/dev/null
+    ;;
+  full)
+    log "Running full metadata consistency check"
+    restic check --with-cache >/dev/null
+    ;;
+  *)
+    log "ERROR: Unsupported RESTIC_CHECK_MODE='$restic_check_mode'. Use 'quick' or 'full'."
+    exit 1
+    ;;
+esac
+
 log "verify-backup.sh completed successfully"
