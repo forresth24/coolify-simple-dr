@@ -97,7 +97,23 @@ list_backup_domain_folders() {
 rclone_config_file_path() {
   local raw_line
 
-  raw_line="$(rclone config file 2>/dev/null | awk -F': ' '/stored at:/ {print $2; exit}')"
+  raw_line="$(
+    rclone config file 2>/dev/null | awk '
+      /stored at:[[:space:]]*$/ {
+        if (getline > 0) {
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+          print
+          exit
+        }
+      }
+      /stored at:[[:space:]]+/ {
+        sub(/^.*stored at:[[:space:]]+/, "", $0)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+        print
+        exit
+      }
+    '
+  )"
   if [[ -n "$raw_line" ]]; then
     printf '%s' "$raw_line"
     return 0
