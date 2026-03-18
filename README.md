@@ -33,6 +33,8 @@ sudo bash install.sh
 
 `install.sh` expects `/etc/coolify-dr.env` to exist (it does not create temporary config files). If this is a fresh setup, prefer the one-command flow below so the script can prompt for all required values.
 
+If a previous `coolify-dr` run is still holding the process lock, rerun the relevant script with `--force` to terminate the existing `coolify-dr` process and retry lock acquisition (for example: `bash /opt/coolify-dr/backup.sh --force`).
+
 If you already have the env file, update `/etc/coolify-dr.env`:
 
 ```bash

@@ -4,6 +4,7 @@ SCRIPT_SOURCE="${BASH_SOURCE:-$0}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "$SCRIPT_SOURCE")" && pwd -P)"
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+parse_common_args "$@"
 
 exec > >(tee -a "$LOG_DIR/retention.log") 2>&1
 

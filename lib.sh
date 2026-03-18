@@ -27,6 +27,8 @@ RESTIC_REPOSITORY="${RESTIC_REPOSITORY:-rclone:${GDRIVE_REMOTE}/${DEFAULT_RESTIC
 RESTIC_PASSWORD_FILE="${RESTIC_PASSWORD_FILE:-/etc/coolify-dr/restic-password}"
 RESTORE_SANDBOX="${RESTORE_SANDBOX:-/var/lib/coolify-dr/restore-sandbox}"
 LOCK_FILE="${LOCK_FILE:-/var/run/coolify-dr.lock}"
+FORCE_LOCK_ACQUIRE="${FORCE_LOCK_ACQUIRE:-0}"
+LOCK_FORCE_TERM_WAIT_SECONDS="${LOCK_FORCE_TERM_WAIT_SECONDS:-10}"
 
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
@@ -77,12 +79,138 @@ check_dns_guard() {
   log "DNS guard passed: ${DR_DOMAIN} -> ${dns_ip} == local host"
 }
 
-acquire_lock() {
-  exec 9>"$LOCK_FILE"
-  if ! flock -n 9; then
-    log "INFO: Another coolify-dr process is already running."
+parse_common_args() {
+  while (($# > 0)); do
+    case "$1" in
+      --force)
+        FORCE_LOCK_ACQUIRE=1
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        log "ERROR: Unknown argument: $1"
+        return 1
+        ;;
+    esac
+    shift
+  done
+
+  export FORCE_LOCK_ACQUIRE
+  return 0
+}
+
+lock_holder_pid() {
+  local pid=""
+
+  [[ -r "$LOCK_FILE" ]] || return 1
+  pid="$(awk -F= '$1 == "pid" { print $2; exit }' "$LOCK_FILE" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+
+  printf '%s' "$pid"
+}
+
+lock_holder_cmdline() {
+  local pid="$1"
+  local cmdline=""
+
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -r "/proc/$pid/cmdline" ]] || return 1
+
+  cmdline="$(tr '\000' ' ' </proc/"$pid"/cmdline 2>/dev/null || true)"
+  [[ -n "$cmdline" ]] || return 1
+
+  printf '%s' "$cmdline"
+}
+
+write_lock_metadata() {
+  : >"$LOCK_FILE"
+  printf 'pid=%s\nscript=%s\nstarted_at=%s\n' "$$" "${SCRIPT_SOURCE:-$0}" "$(date -Iseconds)" >&9
+}
+
+force_release_lock() {
+  local pid="$1"
+  local cmdline=""
+  local wait_seconds="$LOCK_FORCE_TERM_WAIT_SECONDS"
+
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    log "WARN: Lock holder PID $pid is no longer running. Retrying lock acquisition."
+    return 0
+  fi
+
+  cmdline="$(lock_holder_cmdline "$pid" || true)"
+  if [[ -z "$cmdline" ]]; then
+    log "WARN: Could not inspect command line for PID $pid. Refusing to force lock release."
     return 1
   fi
+
+  if [[ "$cmdline" != *coolify-dr* ]] && [[ "$cmdline" != *backup.sh* ]] && [[ "$cmdline" != *restore-test.sh* ]] && [[ "$cmdline" != *retention.sh* ]]; then
+    log "WARN: PID $pid does not look like a coolify-dr process: $cmdline"
+    log "WARN: Refusing to force lock release for an unrelated process."
+    return 1
+  fi
+
+  log "WARN: --force enabled; stopping lock holder PID $pid ($cmdline)"
+  kill -TERM "$pid" 2>/dev/null || true
+
+  local i
+  for ((i = 0; i < wait_seconds; i++)); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      log "WARN: Lock holder PID $pid exited after TERM."
+      return 0
+    fi
+    sleep 1
+  done
+
+  log "WARN: PID $pid did not exit after ${wait_seconds}s; sending SIGKILL."
+  kill -KILL "$pid" 2>/dev/null || true
+  sleep 1
+
+  if kill -0 "$pid" 2>/dev/null; then
+    log "ERROR: Failed to stop lock holder PID $pid."
+    return 1
+  fi
+
+  log "WARN: Lock holder PID $pid terminated."
+  return 0
+}
+
+acquire_lock() {
+  mkdir -p "$(dirname "$LOCK_FILE")"
+  exec 9>"$LOCK_FILE"
+  if flock -n 9; then
+    write_lock_metadata
+    return 0
+  fi
+
+  local holder_pid=""
+  holder_pid="$(lock_holder_pid || true)"
+  if [[ -n "$holder_pid" ]]; then
+    log "INFO: Another coolify-dr process is already running (pid=$holder_pid)."
+  else
+    log "INFO: Another coolify-dr process is already running."
+  fi
+
+  if [[ "$FORCE_LOCK_ACQUIRE" != "1" ]]; then
+    log "INFO: Re-run with --force to terminate the existing coolify-dr process and retry."
+    return 1
+  fi
+
+  if [[ -z "$holder_pid" ]]; then
+    log "ERROR: Lock file does not expose a holder PID; cannot safely force release."
+    return 1
+  fi
+
+  force_release_lock "$holder_pid" || return 1
+
+  if ! flock -n 9; then
+    log "ERROR: Failed to acquire lock even after --force cleanup."
+    return 1
+  fi
+
+  write_lock_metadata
 }
 
 rclone_config_section_value() {

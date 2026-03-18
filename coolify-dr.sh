@@ -9,6 +9,25 @@ CRON_SCHEDULE="${CRON_SCHEDULE:-*/5 * * * *}"
 CRON_COMMAND="${CRON_COMMAND:-$INSTALL_DIR/backup.sh}"
 LIB_FILE="${LIB_FILE:-$INSTALL_DIR/lib.sh}"
 
+parse_bootstrap_args() {
+  while (($# > 0)); do
+    case "$1" in
+      --force)
+        export FORCE_LOCK_ACQUIRE=1
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        echo "[ERROR] Unknown argument: $1"
+        exit 1
+        ;;
+    esac
+    shift
+  done
+}
+
 require_root_user() {
   local context="$1"
 
@@ -473,6 +492,8 @@ CONF
   exec "$INSTALL_DIR/coolify-dr.sh"
 }
 
+parse_bootstrap_args "$@"
+
 if [[ -z "${BASH_SOURCE:-}" ]]; then
   bootstrap_download_and_install
   exit 0
@@ -490,6 +511,7 @@ require_root_user "DR restore mode needs root privileges for filesystem restore 
 
 # shellcheck source=./lib.sh
 source "$SCRIPT_DIR/lib.sh"
+parse_common_args "$@"
 exec > >(tee -a "$LOG_DIR/dr.log") 2>&1
 
 log "Starting coolify-dr.sh"
