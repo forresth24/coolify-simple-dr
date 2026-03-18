@@ -96,6 +96,10 @@ list_backup_domain_folders() {
 
 rclone_config_file_path() {
   local raw_line
+  local -a candidates=()
+  local home_dir="${HOME:-}"
+  local sudo_home=""
+  local candidate=""
 
   raw_line="$(
     rclone config file 2>/dev/null | awk '
@@ -114,10 +118,38 @@ rclone_config_file_path() {
       }
     '
   )"
-  if [[ -n "$raw_line" ]]; then
+  if [[ -n "$raw_line" && -f "$raw_line" ]]; then
     printf '%s' "$raw_line"
     return 0
   fi
+
+  if [[ -n "${RCLONE_CONFIG:-}" ]]; then
+    candidates+=("$RCLONE_CONFIG")
+  fi
+
+  if [[ -n "$home_dir" ]]; then
+    candidates+=(
+      "$home_dir/.config/rclone/rclone.conf"
+      "$home_dir/.rclone.conf"
+    )
+  fi
+
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    sudo_home="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6 || true)"
+    if [[ -n "$sudo_home" ]]; then
+      candidates+=(
+        "$sudo_home/.config/rclone/rclone.conf"
+        "$sudo_home/.rclone.conf"
+      )
+    fi
+  fi
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -n "$candidate" && -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
 
   return 1
 }
@@ -129,7 +161,7 @@ ensure_gdrive_remote_configured() {
   config_path="$(rclone_config_file_path || true)"
 
   if [[ -z "$config_path" ]]; then
-    log "ERROR: Unable to determine rclone config file path via 'rclone config file'."
+    log "ERROR: Unable to determine an rclone config file path."
     log "ERROR: Configure Google Drive with 'rclone config', then verify using 'rclone listremotes'."
     return 1
   fi
@@ -140,12 +172,15 @@ ensure_gdrive_remote_configured() {
     return 1
   fi
 
+  export RCLONE_CONFIG="$config_path"
+
   if ! grep -Fqx "[$remote_name]" "$config_path"; then
     log "ERROR: rclone remote '$remote_name' is not configured in '$config_path'."
-    log "ERROR: Run 'rclone config' (interactive), or use headless OAuth: 'rclone authorize \"drive\"' on a machine with browser, then paste token on VPS during 'rclone config'."
+    log "ERROR: Run 'rclone config' (interactive), or use headless OAuth: 'rclone authorize "drive"' on a machine with browser, then paste token on VPS during 'rclone config'."
     return 1
   fi
 }
+
 
 
 ensure_dependencies() {
