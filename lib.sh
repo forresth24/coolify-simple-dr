@@ -117,7 +117,7 @@ rclone_remote_has_root_folder_id() {
 
 effective_gdrive_remote() {
   if [[ -n "$GDRIVE_REMOTE_PATH" && "$GDRIVE_REMOTE_PATH" != */* ]] && rclone_remote_has_root_folder_id; then
-    log "INFO: Remote '$GDRIVE_REMOTE_NAME' already has root_folder_id configured; using remote root instead of nested path '$GDRIVE_REMOTE_PATH'."
+    log "INFO: Remote '$GDRIVE_REMOTE_NAME' already has root_folder_id configured; using remote root instead of nested path '$GDRIVE_REMOTE_PATH'." >&2
     printf '%s:' "$GDRIVE_REMOTE_NAME"
     return 0
   fi
