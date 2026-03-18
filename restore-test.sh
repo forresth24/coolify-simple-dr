@@ -12,6 +12,7 @@ ensure_dependencies
 acquire_lock || exit 0
 check_dns_guard
 restic_env
+probe_restic_repository
 
 rm -rf "$RESTORE_SANDBOX"
 mkdir -p "$RESTORE_SANDBOX"

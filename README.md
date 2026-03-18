@@ -118,6 +118,8 @@ rclone lsd myremote:coolify-dr
 - `rclone lsd myremote:coolify-dr` should list directories (or return empty if the path is new).
 
 If you configured rclone on another machine, copy the config file to the VPS path returned by `rclone config file`, then re-run the checks above.
+If your rclone remote already has `root_folder_id` set to the backup folder itself (for example the folder `ncoolify-dr`), set `GDRIVE_REMOTE` to just `remote:` (or keep `remote:ncoolify-dr` and let the scripts normalize it). Otherwise `remote:ncoolify-dr` can create a nested `ncoolify-dr/ncoolify-dr` structure.
+
 
 ## Domain-separated backups
 
@@ -156,6 +158,8 @@ The DR/restore host must use the same restic password as the primary backup host
 - Restore mode does **not** generate a replacement password anymore, because that causes restic to fail with `Fatal: wrong password or no key found` against an existing repository.
 - Before restore, copy the original `/etc/coolify-dr/restic-password` from the primary server to the DR server and run `chmod 600 /etc/coolify-dr/restic-password`.
 - As an alternative, export `RESTIC_PASSWORD` in the environment before running the scripts.
+- If you now get `Fatal: config cannot be loaded: unsupported repository version`, the password is likely correct but the DR host's `restic` binary is older than the repository format created on the primary host. Upgrade `restic` on the DR host to the same or newer version than the primary host, then retry.
+
 
 ## One-command for the primary instance (install + cron + first upload)
 

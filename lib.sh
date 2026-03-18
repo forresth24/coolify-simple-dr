@@ -14,6 +14,10 @@ fi
 : "${GDRIVE_REMOTE:?Set GDRIVE_REMOTE in $ENV_FILE (e.g. gdrive:coolify-dr)}"
 
 GDRIVE_REMOTE_NAME="${GDRIVE_REMOTE%%:*}"
+GDRIVE_REMOTE_PATH="${GDRIVE_REMOTE#*:}"
+if [[ "$GDRIVE_REMOTE_PATH" == "$GDRIVE_REMOTE" ]]; then
+  GDRIVE_REMOTE_PATH=""
+fi
 
 LOG_DIR="${LOG_DIR:-/var/log/coolify-dr}"
 STATE_DIR="${STATE_DIR:-/var/lib/coolify-dr}"
@@ -75,9 +79,79 @@ acquire_lock() {
   fi
 }
 
+rclone_config_section_value() {
+  local remote_name="$1"
+  local key="$2"
+  local config_path="${RCLONE_CONFIG:-}"
+
+  [[ -n "$config_path" && -f "$config_path" ]] || return 1
+
+  awk -v section="$remote_name" -v key="$key" '
+    $0 == "[" section "]" { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section {
+      split($0, parts, "=")
+      current_key=parts[1]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", current_key)
+      if (current_key == key) {
+        value=substr($0, index($0, "=") + 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+        print value
+        exit
+      }
+    }
+  ' "$config_path"
+}
+
+rclone_remote_has_root_folder_id() {
+  local root_folder_id=""
+  root_folder_id="$(rclone_config_section_value "$GDRIVE_REMOTE_NAME" "root_folder_id" || true)"
+  [[ -n "$root_folder_id" ]]
+}
+
+effective_gdrive_remote() {
+  if [[ -n "$GDRIVE_REMOTE_PATH" && "$GDRIVE_REMOTE_PATH" != */* ]] && rclone_remote_has_root_folder_id; then
+    log "INFO: Remote '$GDRIVE_REMOTE_NAME' already has root_folder_id configured; using remote root instead of nested path '$GDRIVE_REMOTE_PATH'."
+    printf '%s:' "$GDRIVE_REMOTE_NAME"
+    return 0
+  fi
+
+  printf '%s' "$GDRIVE_REMOTE"
+}
+
 restic_repository_for_domain_folder() {
   local domain_folder="$1"
-  printf 'rclone:%s/%s/restic' "$GDRIVE_REMOTE" "$domain_folder"
+  local remote_base=""
+
+  remote_base="$(effective_gdrive_remote)"
+  printf 'rclone:%s/%s/restic' "$remote_base" "$domain_folder"
+}
+
+probe_restic_repository() {
+  local probe_output=""
+
+  if probe_output="$(restic cat config 2>&1 >/dev/null)"; then
+    return 0
+  fi
+
+  if [[ "$probe_output" == *"unsupported repository version"* ]]; then
+    log "ERROR: Restic cannot open '$RESTIC_REPOSITORY' because this host's restic binary is too old for that repository format."
+    log "ERROR: Install the same or a newer restic version than the primary backup host, then retry."
+    return 20
+  fi
+
+  if [[ "$probe_output" == *"wrong password or no key found"* ]]; then
+    log "ERROR: Restic password does not match repository '$RESTIC_REPOSITORY'."
+    log "ERROR: Copy the original password file from the primary host or export RESTIC_PASSWORD before retrying."
+    return 21
+  fi
+
+  if [[ "$probe_output" == *"Is there a repository at the following location?"* ]] || [[ "$probe_output" == *"config file does not exist"* ]]; then
+    return 10
+  fi
+
+  printf '%s\n' "$probe_output" >&2
+  return 1
 }
 
 ensure_restic_password_ready() {
@@ -108,7 +182,10 @@ restic_env() {
 }
 
 list_backup_domain_folders() {
-  rclone lsf "$GDRIVE_REMOTE" --dirs-only | sed 's:/$::' | awk 'NF > 0'
+  local remote_base=""
+
+  remote_base="$(effective_gdrive_remote)"
+  rclone lsf "$remote_base" --dirs-only | sed 's:/$::' | awk 'NF > 0'
 }
 
 

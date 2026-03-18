@@ -24,9 +24,17 @@ for p in $BACKUP_TARGETS; do
   log "Verified backup target: $p"
 done
 
-if ! restic cat config >/dev/null 2>&1; then
+if probe_restic_repository; then
+  probe_status=0
+else
+  probe_status=$?
+fi
+
+if [[ $probe_status -eq 10 ]]; then
   log "Restic repository not initialized yet."
   restic init
+elif [[ $probe_status -ne 0 ]]; then
+  exit $probe_status
 fi
 
 log "Running metadata consistency check"

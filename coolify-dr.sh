@@ -500,6 +500,7 @@ check_dns_guard
 restore_domain_folder="$(choose_restore_domain_folder)"
 log "Selected restore domain folder: $restore_domain_folder"
 restic_env "$restore_domain_folder"
+probe_restic_repository
 
 mkdir -p /data
 log "Stopping old coolify services (if any)"
