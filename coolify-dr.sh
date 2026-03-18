@@ -127,16 +127,16 @@ choose_restore_domain_folder() {
     folders+=("$folder")
   done < <(list_backup_domain_folders || true)
 
-  echo "[INFO] Backup domain folders on Google Drive (${GDRIVE_REMOTE}):"
+  echo "[INFO] Backup domain folders on Google Drive (${GDRIVE_REMOTE}):" >&2
   if (( ${#folders[@]} == 0 )); then
-    echo "  (empty - no folders found, defaulting to DR_DOMAIN)"
+    echo "  (empty - no folders found, defaulting to DR_DOMAIN)" >&2
     printf '%s' "$default_folder"
     return 0
   fi
 
   local i=1
   for folder in "${folders[@]}"; do
-    echo "  [$i] $folder"
+    echo "  [$i] $folder" >&2
     ((i++))
   done
 
@@ -144,7 +144,7 @@ choose_restore_domain_folder() {
   [[ -t 0 ]] && prompt_stream="/dev/stdin"
 
   local answer
-  read -r -p "Choose restore folder by number or name [$default_folder]: " answer <"$prompt_stream"
+  read -r -p "Choose restore folder by number or name [$default_folder]: " answer <"$prompt_stream" >&2
   answer="${answer:-$default_folder}"
 
   if [[ "$answer" =~ ^[0-9]+$ ]]; then
