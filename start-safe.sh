@@ -9,6 +9,7 @@ exec > >(tee -a "$LOG_DIR/start-safe.log") 2>&1
 
 log "Starting start-safe.sh"
 ensure_dependencies
+log_runtime_context "start-safe.sh"
 check_dns_guard
 
 if command -v systemctl >/dev/null 2>&1; then
@@ -25,3 +26,6 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 log "Safe start finished. Run backup.sh manually if you want an immediate test backup."
+log "STATUS tail -n 100 '$LOG_DIR/start-safe.log'"
+log "STATUS docker ps -a"
+log "STATUS systemctl status docker --no-pager"

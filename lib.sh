@@ -35,6 +35,12 @@ log() {
   printf '[%s] %s\n' "$(date -Iseconds)" "$msg"
 }
 
+log_kv() {
+  local key="$1"
+  local value="$2"
+  log "ENV ${key}=${value}"
+}
+
 public_ipv4() {
   local ip
   ip="$(curl -4fsS --max-time 5 https://ifconfig.co 2>/dev/null || true)"
@@ -136,7 +142,7 @@ probe_restic_repository() {
     repository="$(restic_repository_for_domain_folder "$domain_folder")"
   fi
 
-  if probe_output="$(restic --repo "$repository" cat config >/dev/null 2>&1)"; then
+  if probe_output="$(restic --repo "$repository" cat config 2>&1 >/dev/null)"; then
     return 0
   fi
 
@@ -177,6 +183,15 @@ ensure_restic_password_ready() {
   fi
 }
 
+restic_password_source() {
+  if [[ -n "${RESTIC_PASSWORD:-}" ]]; then
+    printf '%s' 'env:RESTIC_PASSWORD'
+    return 0
+  fi
+
+  printf '%s' "$RESTIC_PASSWORD_FILE"
+}
+
 restic_env() {
   local domain_folder="${1:-${RESTIC_DOMAIN_FOLDER:-$DR_DOMAIN}}"
 
@@ -187,13 +202,51 @@ restic_env() {
   export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE
 }
 
+log_runtime_context() {
+  local action="${1:-runtime}"
+  local password_source=""
+
+  password_source="$(restic_password_source)"
+  log "Runtime context for ${action}:"
+  log_kv "ENV_FILE" "$ENV_FILE"
+  log_kv "DR_DOMAIN" "$DR_DOMAIN"
+  log_kv "GDRIVE_REMOTE" "$GDRIVE_REMOTE"
+  log_kv "RCLONE_CONFIG" "${RCLONE_CONFIG:-<unresolved>}"
+  log_kv "RESTIC_DOMAIN_FOLDER" "${RESTIC_DOMAIN_FOLDER:-$DR_DOMAIN}"
+  log_kv "RESTIC_REPOSITORY" "${RESTIC_REPOSITORY:-<unresolved>}"
+  log_kv "RESTIC_PASSWORD_SOURCE" "$password_source"
+  log_kv "BACKUP_TARGETS" "$BACKUP_TARGETS"
+  log_kv "LOG_DIR" "$LOG_DIR"
+  log_kv "STATE_DIR" "$STATE_DIR"
+  log_kv "RESTORE_SANDBOX" "$RESTORE_SANDBOX"
+  log_kv "LOCK_FILE" "$LOCK_FILE"
+}
+
+log_post_backup_status() {
+  log "Status commands to inspect this backup:"
+  log "STATUS tail -n 100 '$LOG_DIR/backup.log'"
+  log "STATUS tail -n 100 '$LOG_DIR/verify-backup.log'"
+  log "STATUS cat '$STATE_DIR/last-backup-meta.json'"
+  log "STATUS restic --repo '$RESTIC_REPOSITORY' snapshots --last 5"
+  log "STATUS restic --repo '$RESTIC_REPOSITORY' stats latest"
+  log "STATUS rclone lsd '$(effective_gdrive_remote)'"
+}
+
+log_restore_status() {
+  log "Status commands to inspect restore state:"
+  log "STATUS tail -n 100 '$LOG_DIR/dr.log'"
+  log "STATUS tail -n 100 '$LOG_DIR/start-safe.log'"
+  log "STATUS restic --repo '$RESTIC_REPOSITORY' snapshots --last 5"
+  log "STATUS docker ps -a"
+  log "STATUS systemctl status docker --no-pager"
+}
+
 list_backup_domain_folders() {
   local remote_base=""
 
   remote_base="$(effective_gdrive_remote)"
   rclone lsf "$remote_base" --dirs-only | sed 's:/$::' | awk 'NF > 0'
 }
-
 
 rclone_config_file_path() {
   local raw_line
@@ -202,8 +255,9 @@ rclone_config_file_path() {
   local sudo_home=""
   local candidate=""
 
-  raw_line="$(
-    rclone config file 2>/dev/null | awk '
+  raw_line="$({
+    rclone config file 2>/dev/null || true
+  } | awk '
       /stored at:[[:space:]]*$/ {
         if (getline > 0) {
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
@@ -282,11 +336,10 @@ ensure_gdrive_remote_configured() {
   fi
 }
 
-
-
 ensure_dependencies() {
   local deps=(curl dig flock jq restic rclone tar)
   local missing=()
+  local d
   for d in "${deps[@]}"; do
     if ! command -v "$d" >/dev/null 2>&1; then
       missing+=("$d")

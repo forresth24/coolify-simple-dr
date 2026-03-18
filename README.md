@@ -178,6 +178,7 @@ Primary mode will:
 3. Validate runtime prerequisites (including rclone remote configuration) before scheduling backups.
 4. Add an idempotent backup cron job (`*/5 * * * * /opt/coolify-dr/backup.sh`) if not already present.
 5. Run `backup.sh` immediately for the first upload.
+6. Print the effective runtime context again in the logs, including `DR_DOMAIN`, `GDRIVE_REMOTE`, resolved `RCLONE_CONFIG`, and `RESTIC_REPOSITORY`, so you can confirm the backup is targeting the expected repository.
 
 You can override the cron schedule with `CRON_SCHEDULE`, for example:
 
@@ -204,3 +205,45 @@ CRON_SCHEDULE="*/10 * * * *" DR_BOOTSTRAP_MODE=primary bash coolify-dr.sh
 ## ChatGPT Codex project kit
 
 This repo also includes `chatgpt-project/` templates for Bash scripting workflows in chatgpt.com/codex (standard mode + optional hardening checklist mode). See `chatgpt-project/README.md`.
+
+## Logs, status, and how to verify a new backup
+
+When you run `coolify-dr.sh`, `backup.sh`, `verify-backup.sh`, or `restore-test.sh`, the scripts now print the main runtime variables again before doing work. This is intended to make troubleshooting easier, especially for values that determine where data is written, such as `GDRIVE_REMOTE`, `RCLONE_CONFIG`, `RESTIC_DOMAIN_FOLDER`, and `RESTIC_REPOSITORY`.
+
+Typical log files:
+
+- `/var/log/coolify-dr/backup.log`
+- `/var/log/coolify-dr/verify-backup.log`
+- `/var/log/coolify-dr/dr.log`
+- `/var/log/coolify-dr/start-safe.log`
+- `/var/log/coolify-dr/restore-test.log`
+
+Useful commands after rerunning primary backup mode:
+
+```bash
+tail -n 100 /var/log/coolify-dr/backup.log
+tail -n 100 /var/log/coolify-dr/verify-backup.log
+cat /var/lib/coolify-dr/last-backup-meta.json
+restic --repo "rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic" snapshots --last 5
+restic --repo "rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic" stats latest
+rclone lsd "${GDRIVE_REMOTE}"
+```
+
+If you run restore mode, these are also useful:
+
+```bash
+tail -n 100 /var/log/coolify-dr/dr.log
+tail -n 100 /var/log/coolify-dr/start-safe.log
+docker ps -a
+systemctl status docker --no-pager
+```
+
+What to look for in the logs:
+
+- `ENV RESTIC_REPOSITORY=...` to confirm the exact restic repo path being used.
+- `ENV RCLONE_CONFIG=...` to confirm which `rclone.conf` file was resolved.
+- `Backup success. Last metadata written...` to confirm the backup run finished.
+- `last-backup-meta.json` timestamp to verify a fresh run actually completed.
+- `restic snapshots --last 5` to see whether a new snapshot was created.
+
+If you rerun primary mode and still do not see a new snapshot, check whether the backup source paths actually changed. Restic is incremental, so a successful run can upload very little or nothing if the source data is unchanged.

@@ -12,6 +12,7 @@ ensure_dependencies
 acquire_lock || exit 0
 check_dns_guard
 restic_env
+log_runtime_context "restore-test.sh"
 probe_restic_repository
 
 rm -rf "$RESTORE_SANDBOX"
@@ -33,3 +34,5 @@ if [[ -z "$(find "$RESTORE_SANDBOX" -mindepth 1 -maxdepth 2 | head -n1)" ]]; the
 fi
 
 log "restore-test.sh passed"
+log "STATUS tail -n 100 '$LOG_DIR/restore-test.log'"
+log "STATUS find '$RESTORE_SANDBOX' -mindepth 1 -maxdepth 2 | head"
