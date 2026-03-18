@@ -80,10 +80,28 @@ restic_repository_for_domain_folder() {
   printf 'rclone:%s/%s/restic' "$GDRIVE_REMOTE" "$domain_folder"
 }
 
+ensure_restic_password_ready() {
+  if [[ -n "${RESTIC_PASSWORD:-}" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "$RESTIC_PASSWORD_FILE" ]]; then
+    log "ERROR: Restic password file not found at '$RESTIC_PASSWORD_FILE'."
+    log "ERROR: Copy the original password from the primary server or export RESTIC_PASSWORD before running restore/backup."
+    return 1
+  fi
+
+  if [[ ! -r "$RESTIC_PASSWORD_FILE" ]]; then
+    log "ERROR: Restic password file is not readable at '$RESTIC_PASSWORD_FILE'."
+    return 1
+  fi
+}
+
 restic_env() {
   local domain_folder="${1:-${RESTIC_DOMAIN_FOLDER:-$DR_DOMAIN}}"
 
   ensure_gdrive_remote_configured || return 1
+  ensure_restic_password_ready || return 1
   RESTIC_REPOSITORY="$(restic_repository_for_domain_folder "$domain_folder")"
   export RESTIC_DOMAIN_FOLDER="$domain_folder"
   export RESTIC_REPOSITORY RESTIC_PASSWORD_FILE

@@ -182,17 +182,35 @@ install_deps() {
   fi
 }
 
+setup_restic_password() {
+  local password_file="/etc/coolify-dr/restic-password"
+
+  if [[ -f "$password_file" ]]; then
+    chmod 600 "$password_file"
+    return 0
+  fi
+
+  if [[ "${DR_BOOTSTRAP_MODE:-restore}" == "primary" ]]; then
+    openssl rand -hex 32 >"$password_file"
+    chmod 600 "$password_file"
+    echo "[INFO] Generated new restic password at $password_file for primary backups."
+    return 0
+  fi
+
+  cat <<EOF
+[WARN] Missing $password_file.
+[WARN] Restore mode will fail with 'Fatal: wrong password or no key found' unless you copy the existing restic password from the primary server.
+[WARN] Copy the original password into $password_file, chmod 600 it, then re-run restore.
+EOF
+}
+
 setup_files() {
   mkdir -p "$INSTALL_DIR" /etc/coolify-dr /var/log/coolify-dr /var/lib/coolify-dr
   cp "$SCRIPT_DIR"/*.sh "$INSTALL_DIR"/
   chmod +x "$INSTALL_DIR"/*.sh
 
   create_env_if_missing
-
-  if [[ ! -f /etc/coolify-dr/restic-password ]]; then
-    openssl rand -hex 32 >/etc/coolify-dr/restic-password
-    chmod 600 /etc/coolify-dr/restic-password
-  fi
+  setup_restic_password
 }
 
 install_systemd() {

@@ -148,6 +148,15 @@ DR_RESTORE_DOMAIN_FOLDER=dr-new.example.com sudo /opt/coolify-dr/coolify-dr.sh
 
 If `DR_RESTORE_DOMAIN_FOLDER` is not set and no TTY is available, it defaults to `DR_DOMAIN`.
 
+## Restic password requirements
+
+The DR/restore host must use the same restic password as the primary backup host.
+
+- Primary mode (`DR_BOOTSTRAP_MODE=primary`) auto-generates `/etc/coolify-dr/restic-password` only when the file does not exist yet.
+- Restore mode does **not** generate a replacement password anymore, because that causes restic to fail with `Fatal: wrong password or no key found` against an existing repository.
+- Before restore, copy the original `/etc/coolify-dr/restic-password` from the primary server to the DR server and run `chmod 600 /etc/coolify-dr/restic-password`.
+- As an alternative, export `RESTIC_PASSWORD` in the environment before running the scripts.
+
 ## One-command for the primary instance (install + cron + first upload)
 
 Use the shared `coolify-dr.sh` entrypoint on the **primary Coolify instance** before running restore mode on the second DR instance:
