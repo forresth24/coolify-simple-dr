@@ -42,7 +42,7 @@ validate_domain() {
 
 validate_gdrive_remote() {
   local value="$1"
-  [[ "$value" =~ ^[A-Za-z0-9_-]+:.+ ]]
+  [[ "$value" =~ ^[A-Za-z0-9_-]+:([^[:space:]]*)$ ]]
 }
 
 prompt_with_default() {
@@ -122,7 +122,7 @@ create_env_if_missing() {
     "Google Drive remote:path for backups" \
     "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
     validate_gdrive_remote \
-    "Format must be <rclone-remote>:<path>, e.g. gdrive:coolify-dr"
+    "Format must be <rclone-remote>:<path> (path may be empty), e.g. gdrive:coolify-dr or gdrive:"
 
   prompt_until_valid \
     "BACKUP_TARGETS" \
