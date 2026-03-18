@@ -67,7 +67,7 @@ After confirmation, it saves `/etc/coolify-dr.env`, downloads remaining scripts 
 > - The DNS `A` record of `DR_DOMAIN` must point to the current VPS before running (split-brain guard).
 > - If you use Cloudflare, disable proxy (`DNS only`) during DR checks so public IP comparison works.
 
-> `GDRIVE_REMOTE` note: must be in `remote:path` format (example: `myremote:coolify-dr`). Install/bootstrap validates format only; runtime scripts validate the remote really exists in `rclone config`.
+> `GDRIVE_REMOTE` note: must be in `remote:path` format, where the path can be empty (examples: `myremote:coolify-dr`, `myremote:`). Install/bootstrap validates format only; runtime scripts validate the remote really exists in `rclone config`.
 
 ## rclone configuration (correct-result guide)
 
@@ -224,7 +224,7 @@ Useful commands after rerunning primary backup mode:
 tail -n 100 /var/log/coolify-dr/backup.log
 tail -n 100 /var/log/coolify-dr/verify-backup.log
 cat /var/lib/coolify-dr/last-backup-meta.json
-restic --repo "rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic" snapshots --last 5
+restic --repo "rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic" snapshots --latest 5
 restic --repo "rclone:${GDRIVE_REMOTE}/${DR_DOMAIN}/restic" stats latest
 rclone lsd "${GDRIVE_REMOTE}"
 ```
@@ -244,6 +244,6 @@ What to look for in the logs:
 - `ENV RCLONE_CONFIG=...` to confirm which `rclone.conf` file was resolved.
 - `Backup success. Last metadata written...` to confirm the backup run finished.
 - `last-backup-meta.json` timestamp to verify a fresh run actually completed.
-- `restic snapshots --last 5` to see whether a new snapshot was created.
+- `restic snapshots --latest 5` to see whether a new snapshot was created.
 
 If you rerun primary mode and still do not see a new snapshot, check whether the backup source paths actually changed. Restic is incremental, so a successful run can upload very little or nothing if the source data is unchanged.
