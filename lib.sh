@@ -128,20 +128,26 @@ restic_repository_for_domain_folder() {
 }
 
 probe_restic_repository() {
+  local domain_folder="${RESTIC_DOMAIN_FOLDER:-$DR_DOMAIN}"
+  local repository="${RESTIC_REPOSITORY:-}"
   local probe_output=""
 
-  if probe_output="$(restic cat config 2>&1 >/dev/null)"; then
+  if [[ -z "$repository" ]]; then
+    repository="$(restic_repository_for_domain_folder "$domain_folder")"
+  fi
+
+  if probe_output="$(restic --repo "$repository" cat config >/dev/null 2>&1)"; then
     return 0
   fi
 
   if [[ "$probe_output" == *"unsupported repository version"* ]]; then
-    log "ERROR: Restic cannot open '$RESTIC_REPOSITORY' because this host's restic binary is too old for that repository format."
+    log "ERROR: Restic cannot open '$repository' because this host's restic binary is too old for that repository format."
     log "ERROR: Install the same or a newer restic version than the primary backup host, then retry."
     return 20
   fi
 
   if [[ "$probe_output" == *"wrong password or no key found"* ]]; then
-    log "ERROR: Restic password does not match repository '$RESTIC_REPOSITORY'."
+    log "ERROR: Restic password does not match repository '$repository'."
     log "ERROR: Copy the original password file from the primary host or export RESTIC_PASSWORD before retrying."
     return 21
   fi
