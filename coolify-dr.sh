@@ -68,12 +68,51 @@ validate_gdrive_remote() {
   return 0
 }
 
+read_parent_env_var() {
+  local var_name="$1"
+  local parent_pid="${PPID:-}"
+  local entry=""
+
+  [[ -n "$parent_pid" ]] || return 1
+  [[ -r "/proc/$parent_pid/environ" ]] || return 1
+
+  while IFS= read -r -d '' entry; do
+    if [[ "$entry" == "$var_name="* ]]; then
+      printf '%s' "${entry#*=}"
+      return 0
+    fi
+  done </proc/"$parent_pid"/environ
+
+  return 1
+}
+
+resolve_restore_domain_folder_override() {
+  local folder="${DR_RESTORE_DOMAIN_FOLDER:-}"
+
+  if [[ -n "$folder" ]]; then
+    printf '%s' "$folder"
+    return 0
+  fi
+
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    folder="$(read_parent_env_var DR_RESTORE_DOMAIN_FOLDER || true)"
+    if [[ -n "$folder" ]]; then
+      printf '%s' "$folder"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 choose_restore_domain_folder() {
   local default_folder="$DR_DOMAIN"
   local selected_folder=""
+  local folder_override=""
 
-  if [[ -n "${DR_RESTORE_DOMAIN_FOLDER:-}" ]]; then
-    printf '%s' "$DR_RESTORE_DOMAIN_FOLDER"
+  folder_override="$(resolve_restore_domain_folder_override || true)"
+  if [[ -n "$folder_override" ]]; then
+    printf '%s' "$folder_override"
     return 0
   fi
 
