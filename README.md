@@ -50,8 +50,9 @@ curl -fsSL https://repo/coolify-dr.sh | DR_SCRIPT_URL="https://repo/coolify-dr.s
 The bootstrap script will:
 
 1. Auto-derive `DR_REPO_RAW_BASE` from `DR_SCRIPT_URL`.
-2. Prompt and validate key values (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`).
-3. Show a full configuration summary for confirmation.
+2. If `/etc/coolify-dr.env` already exists and has non-empty bootstrap values, show them first and ask whether to overwrite before prompting again.
+3. Prompt and validate key values (`DR_REPO_RAW_BASE`, `DR_DOMAIN`, `GDRIVE_REMOTE`, `BACKUP_TARGETS`).
+4. Show a full configuration summary for confirmation.
 
 Confirmation behavior:
 

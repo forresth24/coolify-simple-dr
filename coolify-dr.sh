@@ -264,6 +264,47 @@ prompt_with_default() {
   fi
 }
 
+bootstrap_has_existing_values() {
+  local key
+
+  for key in DR_REPO_RAW_BASE DR_DOMAIN GDRIVE_REMOTE BACKUP_TARGETS; do
+    if [[ -n "${!key:-}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+confirm_bootstrap_overwrite_existing_env() {
+  local overwrite=""
+
+  cat <<SUMMARY
+[INFO] Existing bootstrap values detected in $ENV_FILE:
+  - DR_REPO_RAW_BASE: ${DR_REPO_RAW_BASE:-<empty>}
+  - DR_DOMAIN: ${DR_DOMAIN:-<empty>}
+  - GDRIVE_REMOTE: ${GDRIVE_REMOTE:-<empty>}
+  - BACKUP_TARGETS: ${BACKUP_TARGETS:-<empty>}
+SUMMARY
+
+  if [[ -t 0 ]]; then
+    read -r -p "Overwrite these values and prompt again? [y/N]: " overwrite
+  elif [[ -r /dev/tty ]]; then
+    read -r -p "Overwrite these values and prompt again? [y/N]: " overwrite </dev/tty
+  else
+    echo "[INFO] Non-interactive mode: keeping existing env values."
+    return 1
+  fi
+
+  if [[ "$overwrite" =~ ^[Yy]$ ]]; then
+    unset DR_REPO_RAW_BASE DR_DOMAIN GDRIVE_REMOTE BACKUP_TARGETS
+    return 0
+  fi
+
+  echo "[INFO] Keeping existing env values as prompt defaults."
+  return 1
+}
+
 bootstrap_download_and_install() {
   local tmpdir required_files file
 
@@ -277,6 +318,9 @@ bootstrap_download_and_install() {
       echo "[INFO] Found existing env file: $ENV_FILE"
       # shellcheck source=/dev/null
       source "$ENV_FILE"
+      if bootstrap_has_existing_values; then
+        confirm_bootstrap_overwrite_existing_env || true
+      fi
     fi
 
     prompt_until_valid \
