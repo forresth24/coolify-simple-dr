@@ -314,42 +314,48 @@ bootstrap_download_and_install() {
   echo "[INFO] Bootstrap mode: preparing one-command DR"
 
   while true; do
+    local should_prompt_env="yes"
+
     if [[ -f "$ENV_FILE" ]]; then
       echo "[INFO] Found existing env file: $ENV_FILE"
       # shellcheck source=/dev/null
       source "$ENV_FILE"
       if bootstrap_has_existing_values; then
-        confirm_bootstrap_overwrite_existing_env || true
+        if ! confirm_bootstrap_overwrite_existing_env; then
+          should_prompt_env="no"
+        fi
       fi
     fi
 
-    prompt_until_valid \
-      "DR_REPO_RAW_BASE" \
-      "Raw base URL of this repo" \
-      "$(guess_raw_base)" \
-      validate_url_base \
-      "Use full URL, e.g. https://raw.githubusercontent.com/<org>/<repo>/<branch>"
+    if [[ "$should_prompt_env" == "yes" ]]; then
+      prompt_until_valid \
+        "DR_REPO_RAW_BASE" \
+        "Raw base URL of this repo" \
+        "$(guess_raw_base)" \
+        validate_url_base \
+        "Use full URL, e.g. https://raw.githubusercontent.com/<org>/<repo>/<branch>"
 
-    prompt_until_valid \
-      "DR_DOMAIN" \
-      "DR domain (must point to this VPS before restore)" \
-      "${DR_DOMAIN:-}" \
-      validate_domain \
-      "Use a valid FQDN, e.g. dr.example.com"
+      prompt_until_valid \
+        "DR_DOMAIN" \
+        "DR domain (must point to this VPS before restore)" \
+        "${DR_DOMAIN:-}" \
+        validate_domain \
+        "Use a valid FQDN, e.g. dr.example.com"
 
-    prompt_until_valid \
-      "GDRIVE_REMOTE" \
-      "Google Drive remote:path for backups" \
-      "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
-      validate_gdrive_remote \
-      "Format must be <rclone-remote>:<path>, e.g. gdrive:coolify-dr"
+      prompt_until_valid \
+        "GDRIVE_REMOTE" \
+        "Google Drive remote:path for backups" \
+        "${GDRIVE_REMOTE:-gdrive:coolify-dr}" \
+        validate_gdrive_remote \
+        "Format must be <rclone-remote>:<path>, e.g. gdrive:coolify-dr"
 
-    prompt_until_valid \
-      "BACKUP_TARGETS" \
-      "Backup targets" \
-      "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}" \
-      validate_non_empty \
-      "Provide at least one path, e.g. /data/coolify /var/lib/docker/volumes"
+      prompt_until_valid \
+        "BACKUP_TARGETS" \
+        "Backup targets" \
+        "${BACKUP_TARGETS:-/data/coolify /var/lib/docker/volumes}" \
+        validate_non_empty \
+        "Provide at least one path, e.g. /data/coolify /var/lib/docker/volumes"
+    fi
 
     cat <<SUMMARY
 [INFO] Bootstrap configuration review:
