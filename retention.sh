@@ -12,6 +12,7 @@ ensure_dependencies
 acquire_lock || exit 0
 check_dns_guard
 restic_env
+log_runtime_context "retention.sh"
 
 # Keep dense recent points + long-term points.
 restic forget --prune \

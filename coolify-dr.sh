@@ -500,6 +500,7 @@ check_dns_guard
 restore_domain_folder="$(choose_restore_domain_folder)"
 log "Selected restore domain folder: $restore_domain_folder"
 restic_env "$restore_domain_folder"
+log_runtime_context "coolify-dr.sh"
 probe_restic_repository
 
 mkdir -p /data
@@ -519,4 +520,5 @@ restic restore "$snapshot" --target /
 
 log "Restore done. Starting services safely."
 "$SCRIPT_DIR/start-safe.sh"
+log_restore_status
 log "DR flow complete"

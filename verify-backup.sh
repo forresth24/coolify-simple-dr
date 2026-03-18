@@ -11,6 +11,7 @@ log "Starting verify-backup.sh"
 ensure_dependencies
 check_dns_guard
 restic_env
+log_runtime_context "verify-backup.sh"
 
 for p in $BACKUP_TARGETS; do
   if [[ ! -e "$p" ]]; then

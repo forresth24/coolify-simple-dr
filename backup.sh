@@ -13,6 +13,7 @@ acquire_lock || exit 0
 check_dns_guard
 "$SCRIPT_DIR/verify-backup.sh"
 restic_env
+log_runtime_context "backup.sh"
 
 host="$(hostname -f 2>/dev/null || hostname)"
 ip="$(public_ipv4)"
@@ -28,3 +29,4 @@ restic backup $BACKUP_TARGETS \
 
 snapshot_metadata
 log "Backup success. Last metadata written to $STATE_DIR/last-backup-meta.json"
+log_post_backup_status
