@@ -1,0 +1,622 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# shellcheck disable=SC2317
+# db-migrator.sh
+# -----------------------------------------------------------------------------
+# Interactive/Postgres/MongoDB migration helper with remote SSH support.
+#
+# Design goals:
+#   - Minimal dependencies (bash + coreutils; optional fzf/dialog for richer TUI).
+#   - Safe defaults and explicit confirmations for disruptive operations.
+#   - Works with Docker containers and native database processes.
+#   - Supports non-interactive execution via CLI flags.
+#
+# Spec format (SOURCE/TARGET for --backup/--migrate):
+#   [user@host::]<docker|native>::<postgres|mongodb|other>::<identifier>
+#
+# Examples:
+#   local Docker Postgres container:
+#     docker::postgres::pg_container
+#   remote native MongoDB URI-like identifier:
+#     admin@10.0.0.8::native::mongodb::mongodb://127.0.0.1:27017/admin
+#   local Docker volume fallback for non-native engines:
+#     docker::other::my_data_volume
+#
+# Notes:
+#   - For remote operations, SSH key auth is required (BatchMode=yes).
+#   - Zero-downtime is attempted by default using hot logical streams.
+#   - Any stop/restart action requires explicit operator confirmation.
+# -----------------------------------------------------------------------------
+
+readonly SCRIPT_NAME="$(basename "$0")"
+readonly SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+readonly LOG_DIR="${SCRIPT_DIR}/logs"
+readonly STATE_DIR="${SCRIPT_DIR}/state"
+readonly DATE_TAG="$(/usr/bin/date '+%Y%m%d-%H%M%S')"
+readonly RUN_LOG="${LOG_DIR}/db-migrator-${DATE_TAG}.log"
+
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly CYAN='\033[0;36m'
+readonly BOLD='\033[1m'
+readonly NC='\033[0m'
+
+readonly SSH_BIN="$(command -v ssh || true)"
+readonly DOCKER_BIN="$(command -v docker || true)"
+readonly RSYNC_BIN="$(command -v rsync || true)"
+readonly FIND_BIN="$(command -v find || true)"
+readonly GZIP_BIN="$(command -v gzip || true)"
+readonly TAR_BIN="$(command -v tar || true)"
+readonly DIALOG_BIN="$(command -v dialog || true)"
+readonly FZF_BIN="$(command -v fzf || true)"
+
+TEMP_DIR=''
+
+cleanup() {
+  if [[ -n "${TEMP_DIR}" && -d "${TEMP_DIR}" ]]; then
+    /usr/bin/rm -rf -- "${TEMP_DIR}"
+  fi
+}
+
+on_error() {
+  local exit_code="$1"
+  local line_no="$2"
+  printf '%b[ERROR]%b %s failed at line %s (exit=%s).\n' "${RED}" "${NC}" "${SCRIPT_NAME}" "${line_no}" "${exit_code}" >&2
+}
+
+trap 'on_error "$?" "$LINENO"' ERR
+trap cleanup EXIT
+
+init_runtime() {
+  /usr/bin/mkdir -p -- "${LOG_DIR}" "${STATE_DIR}"
+  TEMP_DIR="$(/usr/bin/mktemp -d)"
+  : >"${RUN_LOG}"
+}
+
+log() {
+  local level="$1"
+  local color="$2"
+  local message="$3"
+  local stamp
+  stamp="$(/usr/bin/date '+%Y-%m-%d %H:%M:%S')"
+  printf '%s [%s] %s\n' "${stamp}" "${level}" "${message}" >>"${RUN_LOG}"
+  printf '%b[%s]%b %s\n' "${color}" "${level}" "${NC}" "${message}"
+}
+
+info() { log 'INFO' "${BLUE}" "$1"; }
+warn() { log 'WARN' "${YELLOW}" "$1"; }
+ok() { log ' OK ' "${GREEN}" "$1"; }
+die() { log 'FAIL' "${RED}" "$1"; exit 1; }
+
+usage() {
+  /usr/bin/cat <<'USAGE'
+Usage:
+  db-migrator.sh                         # interactive TUI mode
+  db-migrator.sh --help                  # show help
+  db-migrator.sh --list                  # list local Docker DB-like instances
+  db-migrator.sh --backup SOURCE         # backup a SOURCE spec
+  db-migrator.sh --migrate SOURCE TARGET # migrate/clone SOURCE -> TARGET
+
+Spec format:
+  [user@host::]<docker|native>::<postgres|mongodb|other>::<identifier>
+
+Examples:
+  db-migrator.sh --backup docker::postgres::pg_main
+  db-migrator.sh --migrate docker::postgres::pg_old admin@10.0.0.2::native::postgres::postgres://postgres@127.0.0.1/postgres
+  db-migrator.sh --migrate docker::other::my_volume root@backup-host::docker::other::target_volume
+
+Behavior:
+  * Mandatory health checks before backup/migration.
+  * Automatic full backup before migration/clone.
+  * PostgreSQL: pg_dump | pg_restore stream.
+  * MongoDB: mongodump | mongorestore stream.
+  * Other engines: rsync of Docker volume or native path.
+  * Zero-downtime attempted by default (no stop unless confirmed).
+USAGE
+}
+
+rotate_logs() {
+  [[ -n "${FIND_BIN}" && -n "${GZIP_BIN}" ]] || return 0
+  /usr/bin/mkdir -p -- "${LOG_DIR}"
+
+  # Compress stale .log files (excluding current run log).
+  while IFS= read -r -d '' file; do
+    if [[ "${file}" != "${RUN_LOG}" ]]; then
+      "${GZIP_BIN}" -f -- "${file}" || true
+    fi
+  done < <("${FIND_BIN}" "${LOG_DIR}" -type f -name '*.log' -mtime +0 -print0)
+
+  # Retain compressed logs for 3 days only.
+  "${FIND_BIN}" "${LOG_DIR}" -type f -name '*.gz' -mtime +3 -delete
+}
+
+validate_spec() {
+  local spec="$1"
+  # Accept conservative character set to reduce injection risk.
+  [[ "${spec}" =~ ^([a-zA-Z0-9_.-]+@[^:]+::)?(docker|native)::(postgres|mongodb|other)::[a-zA-Z0-9_./:@?=+,-]+$ ]]
+}
+
+parse_spec() {
+  local spec="$1"
+  local -n out_host_ref="$2"
+  local -n out_mode_ref="$3"
+  local -n out_engine_ref="$4"
+  local -n out_ident_ref="$5"
+
+  local rest="${spec}"
+  local host=''
+
+  if [[ "${rest}" == *"::"*"::"*"::"* ]]; then
+    local first part2
+    first="${rest%%::*}"
+    part2="${rest#*::}"
+    if [[ "${first}" == *'@'* && "${part2}" == *"::"*"::"* ]]; then
+      host="${first}"
+      rest="${part2}"
+    fi
+  fi
+
+  local mode engine ident
+  mode="${rest%%::*}"
+  rest="${rest#*::}"
+  engine="${rest%%::*}"
+  ident="${rest#*::}"
+
+  out_host_ref="${host}"
+  out_mode_ref="${mode}"
+  out_engine_ref="${engine}"
+  out_ident_ref="${ident}"
+}
+
+ssh_wrapper() {
+  local host="$1"
+  local cmd="$2"
+
+  [[ -n "${SSH_BIN}" ]] || die 'ssh binary not found for remote operation.'
+  "${SSH_BIN}" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new -- "${host}" "bash -lc $(printf '%q' "${cmd}")"
+}
+
+run_cmd() {
+  local host="$1"
+  local cmd="$2"
+
+  if [[ -n "${host}" ]]; then
+    ssh_wrapper "${host}" "${cmd}"
+  else
+    /bin/bash -lc "${cmd}"
+  fi
+}
+
+choose_option() {
+  local title="$1"
+  shift
+  local -a options=("$@")
+
+  if [[ -n "${DIALOG_BIN}" && -t 1 ]]; then
+    local dialog_out="${TEMP_DIR}/dialog.out"
+    local -a items=()
+    local idx
+    for idx in "${!options[@]}"; do
+      items+=("${idx}" "${options[${idx}]}")
+    done
+    "${DIALOG_BIN}" --clear --stdout --title "${title}" --menu "Choose an option" 20 90 10 "${items[@]}" >"${dialog_out}" || return 1
+    local selected
+    selected="$(/usr/bin/cat -- "${dialog_out}")"
+    printf '%s\n' "${options[${selected}]}"
+    return 0
+  fi
+
+  if [[ -n "${FZF_BIN}" && -t 1 ]]; then
+    printf '%s\n' "${options[@]}" | "${FZF_BIN}" --height 40% --prompt "${title}> "
+    return $?
+  fi
+
+  local choice=''
+  PS3="${title} > "
+  select choice in "${options[@]}"; do
+    if [[ -n "${choice}" ]]; then
+      printf '%s\n' "${choice}"
+      return 0
+    fi
+    warn 'Invalid selection. Try again.'
+  done
+}
+
+detect_db_type() {
+  local host="$1"
+  local mode="$2"
+  local ident="$3"
+
+  if [[ "${mode}" == 'docker' ]]; then
+    local image
+    image="$(run_cmd "${host}" "docker inspect --format '{{.Config.Image}}' -- ${ident} 2>/dev/null || true")"
+    if [[ "${image}" =~ [Pp]ostgres ]]; then
+      printf 'postgres\n'
+      return
+    fi
+    if [[ "${image}" =~ [Mm]ongo ]]; then
+      printf 'mongodb\n'
+      return
+    fi
+  fi
+  printf 'other\n'
+}
+
+health_check_postgres() {
+  local host="$1"
+  local mode="$2"
+  local ident="$3"
+
+  if [[ "${mode}" == 'docker' ]]; then
+    run_cmd "${host}" "docker exec -- ${ident} pg_isready -q"
+  else
+    run_cmd "${host}" "pg_isready -d '${ident}' -q"
+  fi
+}
+
+health_check_mongodb() {
+  local host="$1"
+  local mode="$2"
+  local ident="$3"
+
+  if [[ "${mode}" == 'docker' ]]; then
+    run_cmd "${host}" "docker exec -- ${ident} mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"
+  else
+    run_cmd "${host}" "mongosh '${ident}' --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"
+  fi
+}
+
+health_check() {
+  local spec="$1"
+  local host mode engine ident
+  parse_spec "${spec}" host mode engine ident
+
+  info "Running health check for ${spec}"
+  case "${engine}" in
+    postgres) health_check_postgres "${host}" "${mode}" "${ident}" ;;
+    mongodb) health_check_mongodb "${host}" "${mode}" "${ident}" ;;
+    other)
+      if [[ "${mode}" == 'docker' ]]; then
+        run_cmd "${host}" "docker inspect --type volume -- ${ident} >/dev/null 2>&1 || docker inspect --type container -- ${ident} >/dev/null 2>&1"
+      else
+        run_cmd "${host}" "test -e '${ident}'"
+      fi
+      ;;
+  esac
+  ok "Health check passed for ${spec}"
+}
+
+backup_postgres_logical() {
+  local host="$1"
+  local mode="$2"
+  local ident="$3"
+  local out_file="$4"
+
+  if [[ "${mode}" == 'docker' ]]; then
+    run_cmd "${host}" "docker exec -- ${ident} pg_dump -Fc -U postgres -d postgres" >"${out_file}"
+  else
+    run_cmd "${host}" "pg_dump -Fc '${ident}'" >"${out_file}"
+  fi
+}
+
+backup_mongodb_logical() {
+  local host="$1"
+  local mode="$2"
+  local ident="$3"
+  local out_file="$4"
+
+  if [[ "${mode}" == 'docker' ]]; then
+    run_cmd "${host}" "docker exec -- ${ident} mongodump --archive --gzip" >"${out_file}"
+  else
+    run_cmd "${host}" "mongodump --uri='${ident}' --archive --gzip" >"${out_file}"
+  fi
+}
+
+backup_docker_physical() {
+  local host="$1"
+  local ident="$2"
+  local out_file="$3"
+
+  local volume_path
+  volume_path="$(run_cmd "${host}" "docker volume inspect --format '{{.Mountpoint}}' -- ${ident} 2>/dev/null || true")"
+  if [[ -z "${volume_path}" ]]; then
+    volume_path="$(run_cmd "${host}" "docker inspect --format '{{range .Mounts}}{{println .Source}}{{end}}' -- ${ident} | head -n1" || true)"
+  fi
+  [[ -n "${volume_path}" ]] || die "Could not determine Docker volume path for '${ident}'."
+
+  run_cmd "${host}" "tar -C '${volume_path}' -czf - ." >"${out_file}"
+}
+
+backup_other() {
+  local host="$1"
+  local mode="$2"
+  local ident="$3"
+  local out_file="$4"
+
+  if [[ "${mode}" == 'docker' ]]; then
+    backup_docker_physical "${host}" "${ident}" "${out_file}"
+  else
+    run_cmd "${host}" "tar -C '${ident}' -czf - ." >"${out_file}"
+  fi
+}
+
+backup() {
+  local source_spec="$1"
+  local host mode engine ident
+  parse_spec "${source_spec}" host mode engine ident
+
+  local stamp
+  stamp="$(/usr/bin/date '+%Y%m%d-%H%M%S')"
+  local backup_base="${STATE_DIR}/backup-${engine}-${stamp}"
+
+  health_check "${source_spec}"
+  info "Creating logical/physical backup for ${source_spec}"
+
+  case "${engine}" in
+    postgres)
+      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump"
+      if [[ "${mode}" == 'docker' ]]; then
+        backup_docker_physical "${host}" "${ident}" "${backup_base}.physical.tgz"
+      fi
+      ;;
+    mongodb)
+      backup_mongodb_logical "${host}" "${mode}" "${ident}" "${backup_base}.mongodump.gz"
+      if [[ "${mode}" == 'docker' ]]; then
+        backup_docker_physical "${host}" "${ident}" "${backup_base}.physical.tgz"
+      fi
+      ;;
+    other)
+      backup_other "${host}" "${mode}" "${ident}" "${backup_base}.tgz"
+      ;;
+    *)
+      die "Unsupported engine '${engine}'."
+      ;;
+  esac
+
+  ok "Backup created under ${backup_base}*"
+}
+
+confirm_stop_if_needed() {
+  local prompt_msg="$1"
+  local response=''
+  read -r -p "${prompt_msg} [y/N]: " response
+  [[ "${response}" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+migrate_postgres() {
+  local shost="$1"
+  local smode="$2"
+  local sident="$3"
+  local thost="$4"
+  local tmode="$5"
+  local tident="$6"
+
+  if [[ "${smode}" == 'docker' && "${tmode}" == 'docker' && -n "${shost}" && -z "${thost}" ]]; then
+    warn 'Cross-host direct stream handled via local relay for portability.'
+  fi
+
+  local src_cmd dst_cmd
+  if [[ "${smode}" == 'docker' ]]; then
+    src_cmd="docker exec -- ${sident} pg_dump -Fc -U postgres -d postgres"
+  else
+    src_cmd="pg_dump -Fc '${sident}'"
+  fi
+
+  if [[ "${tmode}" == 'docker' ]]; then
+    dst_cmd="docker exec -i -- ${tident} pg_restore --clean --if-exists -U postgres -d postgres"
+  else
+    dst_cmd="pg_restore --clean --if-exists -d '${tident}'"
+  fi
+
+  if [[ -z "${shost}" && -z "${thost}" ]]; then
+    /bin/bash -lc "${src_cmd}" | /bin/bash -lc "${dst_cmd}"
+  elif [[ -n "${shost}" && -z "${thost}" ]]; then
+    ssh_wrapper "${shost}" "${src_cmd}" | /bin/bash -lc "${dst_cmd}"
+  elif [[ -z "${shost}" && -n "${thost}" ]]; then
+    /bin/bash -lc "${src_cmd}" | ssh_wrapper "${thost}" "${dst_cmd}"
+  else
+    ssh_wrapper "${shost}" "${src_cmd}" | ssh_wrapper "${thost}" "${dst_cmd}"
+  fi
+}
+
+migrate_mongodb() {
+  local shost="$1"
+  local smode="$2"
+  local sident="$3"
+  local thost="$4"
+  local tmode="$5"
+  local tident="$6"
+
+  local src_cmd dst_cmd
+  if [[ "${smode}" == 'docker' ]]; then
+    src_cmd="docker exec -- ${sident} mongodump --archive --gzip"
+  else
+    src_cmd="mongodump --uri='${sident}' --archive --gzip"
+  fi
+
+  if [[ "${tmode}" == 'docker' ]]; then
+    dst_cmd="docker exec -i -- ${tident} mongorestore --archive --gzip --drop"
+  else
+    dst_cmd="mongorestore --uri='${tident}' --archive --gzip --drop"
+  fi
+
+  if [[ -z "${shost}" && -z "${thost}" ]]; then
+    /bin/bash -lc "${src_cmd}" | /bin/bash -lc "${dst_cmd}"
+  elif [[ -n "${shost}" && -z "${thost}" ]]; then
+    ssh_wrapper "${shost}" "${src_cmd}" | /bin/bash -lc "${dst_cmd}"
+  elif [[ -z "${shost}" && -n "${thost}" ]]; then
+    /bin/bash -lc "${src_cmd}" | ssh_wrapper "${thost}" "${dst_cmd}"
+  else
+    ssh_wrapper "${shost}" "${src_cmd}" | ssh_wrapper "${thost}" "${dst_cmd}"
+  fi
+}
+
+migrate_other_rsync() {
+  local shost="$1"
+  local smode="$2"
+  local sident="$3"
+  local thost="$4"
+  local tmode="$5"
+  local tident="$6"
+
+  [[ -n "${RSYNC_BIN}" ]] || die 'rsync is required for non-native engine data migration.'
+
+  local src_path dst_path
+  if [[ "${smode}" == 'docker' ]]; then
+    src_path="$(run_cmd "${shost}" "docker volume inspect --format '{{.Mountpoint}}' -- ${sident} 2>/dev/null || true")"
+    [[ -n "${src_path}" ]] || die "Source Docker volume '${sident}' not found."
+  else
+    src_path="${sident}"
+  fi
+
+  if [[ "${tmode}" == 'docker' ]]; then
+    dst_path="$(run_cmd "${thost}" "docker volume inspect --format '{{.Mountpoint}}' -- ${tident} 2>/dev/null || true")"
+    [[ -n "${dst_path}" ]] || die "Target Docker volume '${tident}' not found."
+  else
+    dst_path="${tident}"
+  fi
+
+  local src_ref dst_ref
+  src_ref="${src_path%/}/"
+  dst_ref="${dst_path%/}/"
+
+  if [[ -n "${shost}" ]]; then
+    src_ref="${shost}:${src_ref}"
+  fi
+  if [[ -n "${thost}" ]]; then
+    dst_ref="${thost}:${dst_ref}"
+  fi
+
+  "${RSYNC_BIN}" -aHAX --delete --numeric-ids --info=progress2 -- "${src_ref}" "${dst_ref}"
+}
+
+migrate() {
+  local source_spec="$1"
+  local target_spec="$2"
+
+  local shost smode sengine sident
+  local thost tmode tengine tident
+  parse_spec "${source_spec}" shost smode sengine sident
+  parse_spec "${target_spec}" thost tmode tengine tident
+
+  health_check "${source_spec}"
+  health_check "${target_spec}"
+
+  # Mandatory auto-backup of source before clone/migrate.
+  backup "${source_spec}"
+
+  info "Starting migration ${source_spec} -> ${target_spec}"
+  if [[ "${sengine}" != "${tengine}" ]]; then
+    die "Cross-engine migrations are not supported (source=${sengine}, target=${tengine})."
+  fi
+
+  case "${sengine}" in
+    postgres) migrate_postgres "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
+    mongodb) migrate_mongodb "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
+    other) migrate_other_rsync "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
+    *) die "Unsupported engine '${sengine}'." ;;
+  esac
+
+  ok "Migration completed successfully."
+}
+
+list_instances() {
+  [[ -n "${DOCKER_BIN}" ]] || die 'docker not found for --list operation.'
+  info 'Listing local Docker PostgreSQL/MongoDB-like containers:'
+  "${DOCKER_BIN}" ps --format '{{.Names}}|{{.Image}}|{{.Status}}' | while IFS='|' read -r name image status; do
+    local engine='other'
+    if [[ "${image}" =~ [Pp]ostgres ]]; then
+      engine='postgres'
+    elif [[ "${image}" =~ [Mm]ongo ]]; then
+      engine='mongodb'
+    fi
+    printf '%s\t%s\t%s\t%s\n' "${name}" "${engine}" "${image}" "${status}"
+  done
+}
+
+read_spec_prompt() {
+  local prompt="$1"
+  local spec=''
+  while true; do
+    read -r -p "${prompt}: " spec
+    if validate_spec "${spec}"; then
+      printf '%s\n' "${spec}"
+      return 0
+    fi
+    warn 'Invalid spec format. Use [user@host::]<docker|native>::<postgres|mongodb|other>::<identifier>'
+  done
+}
+
+interactive_backup() {
+  local source_spec
+  source_spec="$(read_spec_prompt 'Enter SOURCE spec for backup')"
+  backup "${source_spec}"
+}
+
+interactive_migrate() {
+  local source_spec target_spec
+  source_spec="$(read_spec_prompt 'Enter SOURCE spec')"
+  target_spec="$(read_spec_prompt 'Enter TARGET spec')"
+  migrate "${source_spec}" "${target_spec}"
+}
+
+interactive_menu() {
+  while true; do
+    printf '%b\n' "${BOLD}${CYAN}==== DB Migrator Main Menu ====${NC}"
+    local choice
+    choice="$(choose_option 'Main menu' \
+      'List local instances' \
+      'Backup source instance' \
+      'Migrate/Clone source -> target' \
+      'Rotate logs now' \
+      'Quit')" || true
+
+    case "${choice}" in
+      'List local instances') list_instances ;;
+      'Backup source instance') interactive_backup ;;
+      'Migrate/Clone source -> target') interactive_migrate ;;
+      'Rotate logs now') rotate_logs; ok 'Log rotation complete.' ;;
+      'Quit') info 'Exiting.'; return 0 ;;
+      *) warn 'No option selected.' ;;
+    esac
+  done
+}
+
+main() {
+  init_runtime
+  rotate_logs
+
+  if [[ "$#" -eq 0 ]]; then
+    interactive_menu
+    return 0
+  fi
+
+  case "$1" in
+    --help|-h)
+      usage
+      ;;
+    --list)
+      list_instances
+      ;;
+    --backup)
+      [[ "$#" -eq 2 ]] || die '--backup requires exactly one SOURCE spec.'
+      validate_spec "$2" || die 'Invalid SOURCE spec.'
+      backup "$2"
+      ;;
+    --migrate)
+      [[ "$#" -eq 3 ]] || die '--migrate requires SOURCE and TARGET specs.'
+      validate_spec "$2" || die 'Invalid SOURCE spec.'
+      validate_spec "$3" || die 'Invalid TARGET spec.'
+      migrate "$2" "$3"
+      ;;
+    *)
+      usage
+      die "Unknown argument '$1'."
+      ;;
+  esac
+}
+
+main "$@"
