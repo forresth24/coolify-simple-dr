@@ -411,7 +411,10 @@ backup_other() {
 
 backup() {
   local source_spec="$1"
-  local host='' mode='' engine='' ident='' user='' db=''
+  local in_user="${2:-}"
+  local in_db="${3:-}"
+
+  local host='' mode='' engine='' ident='' user="${in_user}" db="${in_db}"
   parse_spec "${source_spec}" host mode engine ident user db
 
   local stamp
@@ -486,9 +489,9 @@ migrate_postgres() {
   fi
 
   if [[ "${tmode}" == 'docker' ]]; then
-    dst_cmd="${t_env_pass}docker exec -i -e PGPASSWORD='${tpass}' -- ${tident} pg_restore --clean --if-exists -U '${t_eff_user}' -d '${t_eff_db}'"
+    dst_cmd="${t_env_pass}docker exec -i -e PGPASSWORD='${tpass}' -- ${tident} pg_restore --no-owner --no-privileges --clean --if-exists -U '${t_eff_user}' -d '${t_eff_db}'"
   else
-    dst_cmd="${t_env_pass}pg_restore --clean --if-exists -U '${t_eff_user}' -d '${t_eff_db}'"
+    dst_cmd="${t_env_pass}pg_restore --no-owner --no-privileges --clean --if-exists -U '${t_eff_user}' -d '${t_eff_db}'"
   fi
 
   if [[ -z "${shost}" && -z "${thost}" ]]; then
@@ -582,11 +585,22 @@ migrate() {
   parse_spec "${source_spec}" shost smode sengine sident suser sdb
   parse_spec "${target_spec}" thost tmode tengine tident tuser tdb
 
+  # Interaction Step: Prompt for all credentials up front if not in specs
+  if [[ "${sengine}" == "postgres" ]]; then
+    prompt_if_empty suser "SOURCE Postgres User (leave blank for 'postgres')"
+    prompt_if_empty sdb "SOURCE Postgres Database (leave blank for 'postgres')"
+  fi
+  if [[ "${tengine}" == "postgres" ]]; then
+    prompt_if_empty tuser "TARGET Postgres User (leave blank for 'postgres')"
+    prompt_if_empty tdb "TARGET Postgres Database (leave blank for 'postgres')"
+  fi
+
   health_check "${source_spec}"
   health_check "${target_spec}"
 
   # Mandatory auto-backup of source before clone/migrate.
-  backup "${source_spec}"
+  # Passing suser/sdb here avoids re-prompting inside backup()
+  backup "${source_spec}" "${suser}" "${sdb}"
 
   info "Starting migration ${source_spec} -> ${target_spec}"
   if [[ "${sengine}" != "${tengine}" ]]; then
