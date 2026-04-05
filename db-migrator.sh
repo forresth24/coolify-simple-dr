@@ -349,7 +349,7 @@ backup_postgres_logical() {
   [[ -n "${password}" ]] && env_pass="PGPASSWORD='${password}' "
 
   if [[ "${mode}" == 'docker' ]]; then
-    run_cmd "${host}" "${env_pass}docker exec --e PGPASSWORD='${password}' -- ${ident} pg_dump -Fc -U '${eff_user}' -d '${eff_db}'" >"${out_file}"
+    run_cmd "${host}" "${env_pass}docker exec -e PGPASSWORD='${password}' -- ${ident} pg_dump -Fc -U '${eff_user}' -d '${eff_db}'" >"${out_file}"
   else
     run_cmd "${host}" "${env_pass}pg_dump -Fc -U '${eff_user}' '${eff_db}'" >"${out_file}"
   fi
