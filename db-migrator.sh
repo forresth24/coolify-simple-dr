@@ -133,6 +133,30 @@ rotate_logs() {
   "${FIND_BIN}" "${LOG_DIR}" -type f -name '*.gz' -mtime +3 -delete
 }
 
+rotate_backups() {
+  local engine="$1"
+  [[ -n "${engine}" ]] || return 0
+  /usr/bin/mkdir -p -- "${STATE_DIR}"
+
+  # Keep only the 7 most recent backup files for this specific engine
+  # We look for files starting with backup-<engine>-
+  # This works for .pgdump, .tgz, .mongodump.gz etc.
+  pushd "${STATE_DIR}" >/dev/null || return 0
+  
+  # List files, sort by time (newest first), skip the first 7, then delete the rest.
+  # We group by engine to ensure we don't delete postgres backups when backing up mongodb.
+  local -a files_to_delete
+  while IFS= read -r file; do
+    files_to_delete+=("${file}")
+  done < <(ls -t backup-"${engine}"-* 2>/dev/null | tail -n +8)
+
+  if [[ ${#files_to_delete[@]} -gt 0 ]]; then
+    info "Rotating backups: deleting ${#files_to_delete[@]} old archives for ${engine}..."
+    rm -f -- "${files_to_delete[@]}"
+  fi
+  popd >/dev/null
+}
+
 validate_spec() {
   local spec="$1"
   # Accept conservative character set to reduce injection risk.
@@ -191,20 +215,62 @@ parse_spec() {
 }
 
 prompt_if_empty() {
-  local var_name="$1"
+  local -n _pie_var_ref="$1"
   local prompt_msg="$2"
-  local current_val="${!var_name:-}"
   local is_password="${3:-false}"
 
-  if [[ -z "${current_val}" ]]; then
+  if [[ -z "${_pie_var_ref:-}" ]]; then
+    local _input=''
     if [[ "${is_password}" == "true" ]]; then
-      read -r -s -p "${prompt_msg}: " current_val
+      read -r -s -p "${prompt_msg}: " _input
       printf '\n' >&2
     else
-      read -r -p "${prompt_msg}: " current_val
+      read -r -p "${prompt_msg}: " _input
     fi
-    eval "${var_name}=\"${current_val}\""
+    _pie_var_ref="${_input}"
   fi
+}
+
+display_full_command() {
+  local source_spec="$1"
+  local suser="$2"
+  local sdb="$3"
+  local target_spec="$4"
+  local tuser="$5"
+  local tdb="$6"
+
+  local s_final="${source_spec}"
+  local t_final="${target_spec}"
+
+  # Reconstruct source spec with credentials if they were entered manually
+  if [[ -n "${suser}" || -n "${sdb}" ]]; then
+    # format is host::mode::engine::ident[@user][:db]
+    # identification is the 4th part
+    local s_part123 s_ident
+    s_part123="${source_spec%::*}"
+    s_ident="${source_spec##*::}"
+    # strip existing @ or : from ident just in case
+    s_ident="${s_ident%@*}"
+    s_ident="${s_ident%:*}"
+    s_final="${s_part123}::${s_ident}"
+    [[ -n "${suser}" ]] && s_final="${s_final}@${suser}"
+    [[ -n "${sdb}" ]] && s_final="${s_final}:${sdb}"
+  fi
+
+  # Reconstruct target spec with credentials
+  if [[ -n "${tuser}" || -n "${tdb}" ]]; then
+    local t_part123 t_ident
+    t_part123="${target_spec%::*}"
+    t_ident="${target_spec##*::}"
+    t_ident="${t_ident%@*}"
+    t_ident="${t_ident%:*}"
+    t_final="${t_part123}::${t_ident}"
+    [[ -n "${tuser}" ]] && t_final="${t_final}@${tuser}"
+    [[ -n "${tdb}" ]] && t_final="${t_final}:${tdb}"
+  fi
+
+  printf '\n%b%s%b\n' "${BOLD}${YELLOW}" "=== TASK REPRODUCE COMMAND (Copy & save for next time) ===" "${NC}" >&2
+  printf '%b./%s --migrate %q %q%b\n\n' "${CYAN}" "${SCRIPT_NAME}" "${s_final}" "${t_final}" "${NC}" >&2
 }
 
 ssh_wrapper() {
@@ -411,15 +477,20 @@ backup_other() {
 
 backup() {
   local source_spec="$1"
-  local in_user="${2:-}"
-  local in_db="${3:-}"
-  local in_pass="${4:-}"
+  local user="${2:-}"
+  local db="${3:-}"
+  local pass="${4:-}"
 
-  local host='' mode='' engine='' ident='' user="${in_user}" db="${in_db}"
-  parse_spec "${source_spec}" host mode engine ident user db
+  local host='' mode='' engine='' ident=''
+  local spec_user='' spec_db=''
+  parse_spec "${source_spec}" host mode engine ident spec_user spec_db
+
+  # Prioritize values passed as arguments (from migrate logic) over the spec string
+  [[ -z "${user}" ]] && user="${spec_user}"
+  [[ -z "${db}" ]] && db="${spec_db}"
 
   local stamp
-  stamp="$(/usr/bin/date '+%Y%m%d-%H%M%S')"
+  stamp="$(/usr/bin/date '+%Y%m%d%H')"
   local backup_base="${STATE_DIR}/backup-${engine:-unknown}-${stamp}"
 
   health_check "${source_spec}"
@@ -427,7 +498,7 @@ backup() {
 
   case "${engine}" in
     postgres)
-      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump" "${user}" "${db}" "${in_pass}"
+      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump" "${user}" "${db}" "${pass}"
       if [[ "${mode}" == 'docker' ]]; then
         backup_docker_physical "${host}" "${ident}" "${backup_base}.physical.tgz"
       fi
@@ -447,6 +518,7 @@ backup() {
   esac
 
   ok "Backup created under ${backup_base}*"
+  rotate_backups "${engine}"
 }
 
 confirm_stop_if_needed() {
@@ -576,32 +648,43 @@ migrate_other_rsync() {
 
 migrate() {
   local source_spec="$1"
-  local target_spec="$2"
+  local target_spec="${2:-}" # Might be empty if we are doing early backup
 
-  local shost='' smode='' sengine='' sident='' suser='' sdb=''
-  local thost='' tmode='' tengine='' tident='' tuser='' tdb=''
+  local shost='' smode='' sengine='' sident='' suser='' sdb='' spass=''
+  local thost='' tmode='' tengine='' tident='' tuser='' tdb='' tpass=''
+  
   parse_spec "${source_spec}" shost smode sengine sident suser sdb
-  parse_spec "${target_spec}" thost tmode tengine tident tuser tdb
 
-  # Interaction Step: Prompt for all credentials up front if not in specs
-  local spass='' tpass=''
+  # Interaction Step 1: Prompt for SOURCE credentials
   if [[ "${sengine}" == "postgres" ]]; then
     prompt_if_empty suser "SOURCE Postgres User (leave blank for 'postgres')"
     prompt_if_empty sdb "SOURCE Postgres Database (leave blank for 'postgres')"
     prompt_if_empty spass "SOURCE Postgres Password (optional)" true
   fi
+
+  health_check "${source_spec}"
+  
+  # MANDATORY EARLY BACKUP: Do this as soon as we have SOURCE info
+  backup "${source_spec}" "${suser}" "${sdb}" "${spass}"
+
+  # If target_spec wasn't provided, we need to ask for it now (interactive phase)
+  if [[ -z "${target_spec}" ]]; then
+    target_spec="$(read_spec_prompt 'STEP 2: Enter TARGET spec (The database you want to PASTE/CLONE TO)')"
+  fi
+
+  parse_spec "${target_spec}" thost tmode tengine tident tuser tdb
+
+  # Interaction Step 2: Prompt for TARGET credentials
   if [[ "${tengine}" == "postgres" ]]; then
     prompt_if_empty tuser "TARGET Postgres User (leave blank for 'postgres')"
     prompt_if_empty tdb "TARGET Postgres Database (leave blank for 'postgres')"
     prompt_if_empty tpass "TARGET Postgres Password (optional)" true
   fi
 
-  health_check "${source_spec}"
   health_check "${target_spec}"
 
-  # Mandatory auto-backup of source before clone/migrate.
-  # Passing all gathered credentials here avoids re-prompting inside backup()
-  backup "${source_spec}" "${suser}" "${sdb}" "${spass}"
+  # ALL INFO IS NOW GATHERED - Display the "Resume/Reproduction" command
+  display_full_command "${source_spec}" "${suser}" "${sdb}" "${target_spec}" "${tuser}" "${tdb}"
 
   info "Starting migration ${source_spec} -> ${target_spec}"
   if [[ "${sengine}" != "${tengine}" ]]; then
@@ -748,10 +831,10 @@ interactive_backup() {
 }
 
 interactive_migrate() {
-  local source_spec target_spec
+  local source_spec
   source_spec="$(read_spec_prompt 'STEP 1: Enter SOURCE spec (The database you want to COPY FROM)')"
-  target_spec="$(read_spec_prompt 'STEP 2: Enter TARGET spec (The database you want to PASTE/CLONE TO)')"
-  migrate "${source_spec}" "${target_spec}"
+  # Call migrate with only source first to trigger early backup flow
+  migrate "${source_spec}"
 }
 
 interactive_menu() {
