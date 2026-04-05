@@ -206,8 +206,6 @@ prompt_if_empty() {
     eval "${var_name}=\"${current_val}\""
   fi
 }
-  out_user_ref="${_user:-}"
-}
 
 ssh_wrapper() {
   local host="$1"
