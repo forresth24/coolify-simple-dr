@@ -337,10 +337,10 @@ backup_postgres_logical() {
   local out_file="$4"
   local user="$5"
   local db="$6"
+  local password="${7:-}"
 
   prompt_if_empty user "Postgres User (leave blank for 'postgres')"
   prompt_if_empty db "Postgres Database (leave blank for 'postgres')"
-  local password=''
   prompt_if_empty password "Postgres Password (optional)" true
 
   local eff_user="${user:-postgres}"
@@ -413,6 +413,7 @@ backup() {
   local source_spec="$1"
   local in_user="${2:-}"
   local in_db="${3:-}"
+  local in_pass="${4:-}"
 
   local host='' mode='' engine='' ident='' user="${in_user}" db="${in_db}"
   parse_spec "${source_spec}" host mode engine ident user db
@@ -426,7 +427,7 @@ backup() {
 
   case "${engine}" in
     postgres)
-      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump" "${user}" "${db}"
+      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump" "${user}" "${db}" "${in_pass}"
       if [[ "${mode}" == 'docker' ]]; then
         backup_docker_physical "${host}" "${ident}" "${backup_base}.physical.tgz"
       fi
@@ -456,19 +457,16 @@ confirm_stop_if_needed() {
 }
 
 migrate_postgres() {
-  local shost="$1" smode="$2" sident="$3" suser="$4" sdb="$5"
-  local thost="$6" tmode="$7" tident="$8" tuser="$9" tdb="${10}"
+  local shost="$1" smode="$2" sident="$3" suser="$4" sdb="$5" spass="${6:-}"
+  local thost="$7" tmode="$8" tident="$9" tuser="${10}" tdb="${11}" tpass="${12:-}"
 
-  # Prompt for source if not in spec
+  # Prompt only if still empty after being passed down
   prompt_if_empty suser "SOURCE Postgres User (leave blank for 'postgres')"
   prompt_if_empty sdb "SOURCE Postgres Database (leave blank for 'postgres')"
-  local spass=''
   prompt_if_empty spass "SOURCE Postgres Password (optional)" true
 
-  # Prompt for target if not in spec
   prompt_if_empty tuser "TARGET Postgres User (leave blank for 'postgres')"
   prompt_if_empty tdb "TARGET Postgres Database (leave blank for 'postgres')"
-  local tpass=''
   prompt_if_empty tpass "TARGET Postgres Password (optional)" true
 
   local s_eff_user="${suser:-postgres}"
@@ -586,21 +584,24 @@ migrate() {
   parse_spec "${target_spec}" thost tmode tengine tident tuser tdb
 
   # Interaction Step: Prompt for all credentials up front if not in specs
+  local spass='' tpass=''
   if [[ "${sengine}" == "postgres" ]]; then
     prompt_if_empty suser "SOURCE Postgres User (leave blank for 'postgres')"
     prompt_if_empty sdb "SOURCE Postgres Database (leave blank for 'postgres')"
+    prompt_if_empty spass "SOURCE Postgres Password (optional)" true
   fi
   if [[ "${tengine}" == "postgres" ]]; then
     prompt_if_empty tuser "TARGET Postgres User (leave blank for 'postgres')"
     prompt_if_empty tdb "TARGET Postgres Database (leave blank for 'postgres')"
+    prompt_if_empty tpass "TARGET Postgres Password (optional)" true
   fi
 
   health_check "${source_spec}"
   health_check "${target_spec}"
 
   # Mandatory auto-backup of source before clone/migrate.
-  # Passing suser/sdb here avoids re-prompting inside backup()
-  backup "${source_spec}" "${suser}" "${sdb}"
+  # Passing all gathered credentials here avoids re-prompting inside backup()
+  backup "${source_spec}" "${suser}" "${sdb}" "${spass}"
 
   info "Starting migration ${source_spec} -> ${target_spec}"
   if [[ "${sengine}" != "${tengine}" ]]; then
@@ -608,7 +609,7 @@ migrate() {
   fi
 
   case "${sengine}" in
-    postgres) migrate_postgres "${shost}" "${smode}" "${sident}" "${suser}" "${sdb}" "${thost}" "${tmode}" "${tident}" "${tuser}" "${tdb}" ;;
+    postgres) migrate_postgres "${shost}" "${smode}" "${sident}" "${suser}" "${sdb}" "${spass}" "${thost}" "${tmode}" "${tident}" "${tuser}" "${tdb}" "${tpass}" ;;
     mongodb) migrate_mongodb "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
     other) migrate_other_rsync "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
     *) die "Unsupported engine '${sengine}'." ;;
