@@ -146,29 +146,29 @@ parse_spec() {
   local -n out_engine_ref="$4"
   local -n out_ident_ref="$5"
 
-  local rest="${spec}"
-  local host=''
+  local _rest="${spec}"
+  local _host=''
 
-  if [[ "${rest}" == *"::"*"::"*"::"* ]]; then
-    local first part2
-    first="${rest%%::*}"
-    part2="${rest#*::}"
-    if [[ "${first}" == *'@'* && "${part2}" == *"::"*"::"* ]]; then
-      host="${first}"
-      rest="${part2}"
+  if [[ "${_rest}" == *"::"*"::"*"::"* ]]; then
+    local _first _part2
+    _first="${_rest%%::*}"
+    _part2="${_rest#*::}"
+    if [[ "${_first}" == *'@'* && "${_part2}" == *"::"*"::"* ]]; then
+      _host="${_first}"
+      _rest="${_part2}"
     fi
   fi
 
-  local mode engine ident
-  mode="${rest%%::*}"
-  rest="${rest#*::}"
-  engine="${rest%%::*}"
-  ident="${rest#*::}"
+  local _mode _engine _ident
+  _mode="${_rest%%::*}"
+  _rest="${_rest#*::}"
+  _engine="${_rest%%::*}"
+  _ident="${_rest#*::}"
 
-  out_host_ref="${host}"
-  out_mode_ref="${mode}"
-  out_engine_ref="${engine}"
-  out_ident_ref="${ident}"
+  out_host_ref="${_host}"
+  out_mode_ref="${_mode}"
+  out_engine_ref="${_engine}"
+  out_ident_ref="${_ident}"
 }
 
 ssh_wrapper() {
@@ -271,7 +271,7 @@ health_check_mongodb() {
 
 health_check() {
   local spec="$1"
-  local host mode engine ident
+  local host='' mode='' engine='' ident=''
   parse_spec "${spec}" host mode engine ident
 
   info "Running health check for ${spec}"
@@ -345,12 +345,12 @@ backup_other() {
 
 backup() {
   local source_spec="$1"
-  local host mode engine ident
+  local host='' mode='' engine='' ident=''
   parse_spec "${source_spec}" host mode engine ident
 
   local stamp
   stamp="$(/usr/bin/date '+%Y%m%d-%H%M%S')"
-  local backup_base="${STATE_DIR}/backup-${engine}-${stamp}"
+  local backup_base="${STATE_DIR}/backup-${engine:-unknown}-${stamp}"
 
   health_check "${source_spec}"
   info "Creating logical/physical backup for ${source_spec}"
@@ -497,8 +497,8 @@ migrate() {
   local source_spec="$1"
   local target_spec="$2"
 
-  local shost smode sengine sident
-  local thost tmode tengine tident
+  local shost='' smode='' sengine='' sident=''
+  local thost='' tmode='' tengine='' tident=''
   parse_spec "${source_spec}" shost smode sengine sident
   parse_spec "${target_spec}" thost tmode tengine tident
 
