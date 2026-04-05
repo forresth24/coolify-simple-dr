@@ -136,6 +136,7 @@ rotate_logs() {
 validate_spec() {
   local spec="$1"
   # Accept conservative character set to reduce injection risk.
+  # Added '@' in identifier part to allow username specification.
   [[ "${spec}" =~ ^([a-zA-Z0-9_.-]+@[^:]+::)?(docker|native)::(postgres|mongodb|other)::[a-zA-Z0-9_./:@?=+,-]+$ ]]
 }
 
@@ -145,7 +146,10 @@ parse_spec() {
   local -n out_mode_ref="$3"
   local -n out_engine_ref="$4"
   local -n out_ident_ref="$5"
+  local -n out_user_ref="${6:-_dummy_user}"
+  local -n out_db_ref="${7:-_dummy_db}"
 
+  local _dummy_user='' _dummy_db=''
   local _rest="${spec}"
   local _host=''
 
@@ -159,16 +163,50 @@ parse_spec() {
     fi
   fi
 
-  local _mode _engine _ident
+  local _mode _engine _ident _user _db
   _mode="${_rest%%::*}"
   _rest="${_rest#*::}"
   _engine="${_rest%%::*}"
   _ident="${_rest#*::}"
+  
+  # Format: identifier[@user][:db]
+  # Handle :db suffix first
+  if [[ "${_ident}" == *':'* && ( "${_engine}" == 'postgres' || "${_engine}" == 'mongodb' ) ]]; then
+    _db="${_ident##*:}"
+    _ident="${_ident%:*}"
+  fi
+
+  # Handle @user suffix
+  if [[ "${_ident}" == *'@'* && ( "${_engine}" == 'postgres' || "${_engine}" == 'mongodb' ) ]]; then
+    _user="${_ident##*@}"
+    _ident="${_ident%@*}"
+  fi
 
   out_host_ref="${_host}"
   out_mode_ref="${_mode}"
   out_engine_ref="${_engine}"
   out_ident_ref="${_ident}"
+  out_user_ref="${_user:-}"
+  out_db_ref="${_db:-}"
+}
+
+prompt_if_empty() {
+  local var_name="$1"
+  local prompt_msg="$2"
+  local current_val="${!var_name:-}"
+  local is_password="${3:-false}"
+
+  if [[ -z "${current_val}" ]]; then
+    if [[ "${is_password}" == "true" ]]; then
+      read -r -s -p "${prompt_msg}: " current_val
+      printf '\n' >&2
+    else
+      read -r -p "${prompt_msg}: " current_val
+    fi
+    eval "${var_name}=\"${current_val}\""
+  fi
+}
+  out_user_ref="${_user:-}"
 }
 
 ssh_wrapper() {
@@ -249,11 +287,16 @@ health_check_postgres() {
   local host="$1"
   local mode="$2"
   local ident="$3"
+  local user="$4"
+  local db="$5"
+
+  local eff_user="${user:-postgres}"
+  local eff_db="${db:-postgres}"
 
   if [[ "${mode}" == 'docker' ]]; then
-    run_cmd "${host}" "docker exec -- ${ident} pg_isready -q"
+    run_cmd "${host}" "docker exec -- ${ident} pg_isready -U '${eff_user}' -d '${eff_db}' -q"
   else
-    run_cmd "${host}" "pg_isready -d '${ident}' -q"
+    run_cmd "${host}" "pg_isready -d '${eff_db}' -U '${eff_user}' -q"
   fi
 }
 
@@ -271,12 +314,12 @@ health_check_mongodb() {
 
 health_check() {
   local spec="$1"
-  local host='' mode='' engine='' ident=''
-  parse_spec "${spec}" host mode engine ident
+  local host='' mode='' engine='' ident='' user='' db=''
+  parse_spec "${spec}" host mode engine ident user db
 
   info "Running health check for ${spec}"
   case "${engine}" in
-    postgres) health_check_postgres "${host}" "${mode}" "${ident}" ;;
+    postgres) health_check_postgres "${host}" "${mode}" "${ident}" "${user}" "${db}" ;;
     mongodb) health_check_mongodb "${host}" "${mode}" "${ident}" ;;
     other)
       if [[ "${mode}" == 'docker' ]]; then
@@ -294,11 +337,23 @@ backup_postgres_logical() {
   local mode="$2"
   local ident="$3"
   local out_file="$4"
+  local user="$5"
+  local db="$6"
+
+  prompt_if_empty user "Postgres User (leave blank for 'postgres')"
+  prompt_if_empty db "Postgres Database (leave blank for 'postgres')"
+  local password=''
+  prompt_if_empty password "Postgres Password (optional)" true
+
+  local eff_user="${user:-postgres}"
+  local eff_db="${db:-postgres}"
+  local env_pass=""
+  [[ -n "${password}" ]] && env_pass="PGPASSWORD='${password}' "
 
   if [[ "${mode}" == 'docker' ]]; then
-    run_cmd "${host}" "docker exec -- ${ident} pg_dump -Fc -U postgres -d postgres" >"${out_file}"
+    run_cmd "${host}" "${env_pass}docker exec --e PGPASSWORD='${password}' -- ${ident} pg_dump -Fc -U '${eff_user}' -d '${eff_db}'" >"${out_file}"
   else
-    run_cmd "${host}" "pg_dump -Fc '${ident}'" >"${out_file}"
+    run_cmd "${host}" "${env_pass}pg_dump -Fc -U '${eff_user}' '${eff_db}'" >"${out_file}"
   fi
 }
 
@@ -345,8 +400,8 @@ backup_other() {
 
 backup() {
   local source_spec="$1"
-  local host='' mode='' engine='' ident=''
-  parse_spec "${source_spec}" host mode engine ident
+  local host='' mode='' engine='' ident='' user='' db=''
+  parse_spec "${source_spec}" host mode engine ident user db
 
   local stamp
   stamp="$(/usr/bin/date '+%Y%m%d-%H%M%S')"
@@ -357,7 +412,7 @@ backup() {
 
   case "${engine}" in
     postgres)
-      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump"
+      backup_postgres_logical "${host}" "${mode}" "${ident}" "${backup_base}.pgdump" "${user}" "${db}"
       if [[ "${mode}" == 'docker' ]]; then
         backup_docker_physical "${host}" "${ident}" "${backup_base}.physical.tgz"
       fi
@@ -387,28 +442,42 @@ confirm_stop_if_needed() {
 }
 
 migrate_postgres() {
-  local shost="$1"
-  local smode="$2"
-  local sident="$3"
-  local thost="$4"
-  local tmode="$5"
-  local tident="$6"
+  local shost="$1" smode="$2" sident="$3" suser="$4" sdb="$5"
+  local thost="$6" tmode="$7" tident="$8" tuser="$9" tdb="${10}"
 
-  if [[ "${smode}" == 'docker' && "${tmode}" == 'docker' && -n "${shost}" && -z "${thost}" ]]; then
-    warn 'Cross-host direct stream handled via local relay for portability.'
-  fi
+  # Prompt for source if not in spec
+  prompt_if_empty suser "SOURCE Postgres User (leave blank for 'postgres')"
+  prompt_if_empty sdb "SOURCE Postgres Database (leave blank for 'postgres')"
+  local spass=''
+  prompt_if_empty spass "SOURCE Postgres Password (optional)" true
+
+  # Prompt for target if not in spec
+  prompt_if_empty tuser "TARGET Postgres User (leave blank for 'postgres')"
+  prompt_if_empty tdb "TARGET Postgres Database (leave blank for 'postgres')"
+  local tpass=''
+  prompt_if_empty tpass "TARGET Postgres Password (optional)" true
+
+  local s_eff_user="${suser:-postgres}"
+  local s_eff_db="${sdb:-postgres}"
+  local t_eff_user="${tuser:-postgres}"
+  local t_eff_db="${tdb:-postgres}"
+
+  local s_env_pass=""
+  [[ -n "${spass}" ]] && s_env_pass="PGPASSWORD='${spass}' "
+  local t_env_pass=""
+  [[ -n "${tpass}" ]] && t_env_pass="PGPASSWORD='${tpass}' "
 
   local src_cmd dst_cmd
   if [[ "${smode}" == 'docker' ]]; then
-    src_cmd="docker exec -- ${sident} pg_dump -Fc -U postgres -d postgres"
+    src_cmd="${s_env_pass}docker exec -e PGPASSWORD='${spass}' -- ${sident} pg_dump -Fc -U '${s_eff_user}' -d '${s_eff_db}'"
   else
-    src_cmd="pg_dump -Fc '${sident}'"
+    src_cmd="${s_env_pass}pg_dump -Fc -U '${s_eff_user}' '${s_eff_db}'"
   fi
 
   if [[ "${tmode}" == 'docker' ]]; then
-    dst_cmd="docker exec -i -- ${tident} pg_restore --clean --if-exists -U postgres -d postgres"
+    dst_cmd="${t_env_pass}docker exec -i -e PGPASSWORD='${tpass}' -- ${tident} pg_restore --clean --if-exists -U '${t_eff_user}' -d '${t_eff_db}'"
   else
-    dst_cmd="pg_restore --clean --if-exists -d '${tident}'"
+    dst_cmd="${t_env_pass}pg_restore --clean --if-exists -U '${t_eff_user}' -d '${t_eff_db}'"
   fi
 
   if [[ -z "${shost}" && -z "${thost}" ]]; then
@@ -497,10 +566,10 @@ migrate() {
   local source_spec="$1"
   local target_spec="$2"
 
-  local shost='' smode='' sengine='' sident=''
-  local thost='' tmode='' tengine='' tident=''
-  parse_spec "${source_spec}" shost smode sengine sident
-  parse_spec "${target_spec}" thost tmode tengine tident
+  local shost='' smode='' sengine='' sident='' suser='' sdb=''
+  local thost='' tmode='' tengine='' tident='' tuser='' tdb=''
+  parse_spec "${source_spec}" shost smode sengine sident suser sdb
+  parse_spec "${target_spec}" thost tmode tengine tident tuser tdb
 
   health_check "${source_spec}"
   health_check "${target_spec}"
@@ -514,7 +583,7 @@ migrate() {
   fi
 
   case "${sengine}" in
-    postgres) migrate_postgres "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
+    postgres) migrate_postgres "${shost}" "${smode}" "${sident}" "${suser}" "${sdb}" "${thost}" "${tmode}" "${tident}" "${tuser}" "${tdb}" ;;
     mongodb) migrate_mongodb "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
     other) migrate_other_rsync "${shost}" "${smode}" "${sident}" "${thost}" "${tmode}" "${tident}" ;;
     *) die "Unsupported engine '${sengine}'." ;;
@@ -583,10 +652,13 @@ FORMAT:  [SERVER_LOGIN::]WHERE_IT_RUNS::WHAT_IT_IS::NAME_OR_PATH
 
 4. NAME_OR_PATH (Required):
    The exact container, volume, or folder path you want to target:
-   -> If you chose 'docker' & 'postgres/mongodb' => Type Container Name (e.g. pg-db)
+   -> If you chose 'docker' & 'postgres/mongodb' => Container Name (e.g. pg-db)
+      Tip: For detailed access, use ID@user:dbname (e.g. pg-db@myuser:mydb)
+      If you leave out user, password, or dbname, you will be prompted!
    -> If you chose 'docker' & 'other' => Type Docker Volume Name (e.g. my_data)
-   -> If you chose 'native' & 'postgres/mongodb' => Type Local DB URI or DB Name
-   -> If you chose 'native' & 'other' => Type exact folder path (e.g. /var/www/html)
+   -> If you chose 'native' & 'postgres/mongodb' => Local DB URI or DB Name
+      Tip: For detailed access, use ID@user:dbname (e.g. my-app-db@myuser:mydb)
+   -> If you chose 'native' & 'other' => exact folder path (e.g. /var/www/html)
 
 --- EXAMPLES TO COPY/ADAPT ---
 
