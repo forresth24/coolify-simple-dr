@@ -138,16 +138,14 @@ rotate_backups() {
   [[ -n "${engine}" ]] || return 0
   /usr/bin/mkdir -p -- "${STATE_DIR}"
 
-  # Keep only the 7 most recent backup files for this specific engine
-  # We look for files starting with backup-<engine>-
-  # This works for .pgdump, .tgz, .mongodump.gz etc.
   pushd "${STATE_DIR}" >/dev/null || return 0
   
-  # List files, sort by time (newest first), skip the first 7, then delete the rest.
-  # We group by engine to ensure we don't delete postgres backups when backing up mongodb.
-  local -a files_to_delete
+  # Initialize the array to empty
+  local -a files_to_delete=()
+
+  # Collect files using process substitution to avoid subshell scope issues
   while IFS= read -r file; do
-    files_to_delete+=("${file}")
+    [[ -n "${file}" ]] && files_to_delete+=("${file}")
   done < <(ls -t backup-"${engine}"-* 2>/dev/null | tail -n +8)
 
   if [[ ${#files_to_delete[@]} -gt 0 ]]; then
