@@ -523,6 +523,19 @@ migrate() {
   ok "Migration completed successfully."
 }
 
+get_local_instances() {
+  [[ -n "${DOCKER_BIN}" ]] || return 1
+  "${DOCKER_BIN}" ps --format '{{.Names}}|{{.Image}}' | while IFS='|' read -r name image; do
+    local engine='other'
+    if [[ "${image}" =~ [Pp]ostgres ]]; then
+      engine='postgres'
+    elif [[ "${image}" =~ [Mm]ongo ]]; then
+      engine='mongodb'
+    fi
+    printf 'docker::%s::%s\n' "${engine}" "${name}"
+  done
+}
+
 list_instances() {
   [[ -n "${DOCKER_BIN}" ]] || die 'docker not found for --list operation.'
   info 'Listing local Docker PostgreSQL/MongoDB-like containers:'
@@ -537,16 +550,96 @@ list_instances() {
   done
 }
 
+print_spec_instructions() {
+  /usr/bin/cat >&2 <<'EOF'
+
+======================================================================
+  HOW TO FORMAT A "SPEC" (SOURCE OR TARGET DATABASE ADDRESS)
+======================================================================
+A "spec" is text that tells this tool exactly where your database/data 
+is located and how to connect. It is made of parts glued together by 
+double colons (::).
+
+FORMAT:  [SERVER_LOGIN::]WHERE_IT_RUNS::WHAT_IT_IS::NAME_OR_PATH
+
+--- Break down of the parts ---
+
+1. SERVER_LOGIN (Optional):
+   Are you connecting to a remote server over SSH? Put the login here.
+   If the database is on THIS machine right now, SKIP THIS entirely!
+   -> Example 1: root@192.168.1.50
+   -> Example 2: admin@mysite.com
+
+2. WHERE_IT_RUNS (Required):
+   Is the database inside "Docker", or installed straight on the OS?
+   -> Type "docker" for Docker containers and Docker volumes.
+   -> Type "native" for normal installed databases or raw folders.
+
+3. WHAT_IT_IS (Required):
+   What kind of database or data is this?
+   -> Type "postgres" for PostgreSQL databases.
+   -> Type "mongodb" for MongoDB databases.
+   -> Type "other" for anything else (MySQL, Redis, regular files).
+
+4. NAME_OR_PATH (Required):
+   The exact container, volume, or folder path you want to target:
+   -> If you chose 'docker' & 'postgres/mongodb' => Type Container Name (e.g. pg-db)
+   -> If you chose 'docker' & 'other' => Type Docker Volume Name (e.g. my_data)
+   -> If you chose 'native' & 'postgres/mongodb' => Type Local DB URI or DB Name
+   -> If you chose 'native' & 'other' => Type exact folder path (e.g. /var/www/html)
+
+--- EXAMPLES TO COPY/ADAPT ---
+
+- Local Docker Postgres database named "coolify-db":
+    docker::postgres::coolify-db
+
+- Local Docker MongoDB container named "mongo-prod":
+    docker::mongodb::mongo-prod
+
+- Local Docker Volume (for generic text/media files or MySQL):
+    docker::other::mysite_data
+
+- Remote server Postgres database (IP: 10.0.0.5):
+    root@10.0.0.5::docker::postgres::coolify-db
+======================================================================
+EOF
+}
+
 read_spec_prompt() {
   local prompt="$1"
+  local help_text="${2:-}"
   local spec=''
+  
+  # Try to offer local instances first
+  local -a locals=()
+  while IFS= read -r line; do
+    locals+=("$line")
+  done < <(get_local_instances 2>/dev/null || true)
+
+  if [[ ${#locals[@]} -gt 0 ]]; then
+    printf '\n%b%s%b\n' "${BOLD}${CYAN}" "--- ${prompt} ---" "${NC}" >&2
+    local choice
+    choice="$(choose_option "Select from detected local instances or enter manually" \
+      "${locals[@]}" \
+      "[ Enter Manually ]")" || return 1
+    
+    if [[ "${choice}" != "[ Enter Manually ]" ]]; then
+      printf '%s\n' "${choice}"
+      return 0
+    fi
+  fi
+
+  printf '\n' >&2
+  print_spec_instructions
+  printf '\n' >&2
+
   while true; do
-    read -r -p "${prompt}: " spec
+    read -r -p "${prompt} (e.g. docker::postgres::coolify-db): " spec
     if validate_spec "${spec}"; then
       printf '%s\n' "${spec}"
       return 0
     fi
-    warn 'Invalid spec format. Use [user@host::]<docker|native>::<postgres|mongodb|other>::<identifier>'
+    printf '\n%b[WARN]%b Invalid format! Please review the guide above and use "::" as separator.\n\n' "${YELLOW}" "${NC}" >&2
   done
 }
 
@@ -558,8 +651,8 @@ interactive_backup() {
 
 interactive_migrate() {
   local source_spec target_spec
-  source_spec="$(read_spec_prompt 'Enter SOURCE spec')"
-  target_spec="$(read_spec_prompt 'Enter TARGET spec')"
+  source_spec="$(read_spec_prompt 'STEP 1: Enter SOURCE spec (The database you want to COPY FROM)')"
+  target_spec="$(read_spec_prompt 'STEP 2: Enter TARGET spec (The database you want to PASTE/CLONE TO)')"
   migrate "${source_spec}" "${target_spec}"
 }
 
