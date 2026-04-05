@@ -380,7 +380,20 @@ backup_docker_physical() {
   fi
   [[ -n "${volume_path}" ]] || die "Could not determine Docker volume path for '${ident}'."
 
-  run_cmd "${host}" "tar -C '${volume_path}' -czf - ." >"${out_file}"
+  # Check if path is a directory or a file on the remote/local host
+  local is_dir
+  is_dir="$(run_cmd "${host}" "test -d '${volume_path}' && echo true || echo false")"
+
+  if [[ "${is_dir}" == "true" ]]; then
+    run_cmd "${host}" "tar -C '${volume_path}' -czf - ." >"${out_file}"
+  else
+    # It's a file (like an init.sql file), archive it directly
+    local base_name
+    base_name="$(basename "${volume_path}")"
+    local dir_name
+    dir_name="$(dirname "${volume_path}")"
+    run_cmd "${host}" "tar -C '${dir_name}' -czf - '${base_name}'" >"${out_file}"
+  fi
 }
 
 backup_other() {
